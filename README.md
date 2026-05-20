@@ -74,6 +74,6 @@ uv run pytest -q
 
 ## TODO
 
-- [ ] Bearer auth middleware(Streamable HTTP 入口驗 `MCP_BEARER_TOKEN`)—— 目前 transport 層尚未驗證,部署前必補
+- [x] Bearer auth(StaticTokenVerifier)—— 完成於 commit `0f86383`,server.py `_build_auth()`
 - [ ] 強化 tool return type(用 pydantic model 取代 dict,LLM 端 schema 更豐富)
 - [ ] 加 `list_companies` 的分頁 / 篩選(目前一次回全美股 5000+ 筆)
