@@ -12,12 +12,11 @@ import respx
 from trading_agent_mcp import tools
 from trading_agent_mcp.server import mcp
 
-
 # ---- 註冊性測試 -----------------------------------------------------------
 
 
-async def test_all_15_tools_registered() -> None:
-    """server 啟動時 tools 模組被 import,15 個 @mcp.tool 都掛上去。"""
+async def test_all_tools_registered() -> None:
+    """server 啟動時 tools 模組被 import,16 個 @mcp.tool 都掛上去。"""
     registered = await mcp.list_tools()
     names = {t.name for t in registered}
 
@@ -29,6 +28,7 @@ async def test_all_15_tools_registered() -> None:
         "list_insider_trades",
         "list_daily_prices", "get_latest_price",
         "list_institutional_holders", "get_holders_breakdown",
+        "execute_readonly_sql",
     }
     assert names == expected, f"missing: {expected - names}, extra: {names - expected}"
 

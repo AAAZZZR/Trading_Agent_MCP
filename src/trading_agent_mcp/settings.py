@@ -20,5 +20,11 @@ class Settings(BaseSettings):
     # Streamable HTTP transport port(Zeabur 會以 $PORT 蓋過)
     port: int = 8000
 
+    # Readonly Postgres DSN —— `execute_readonly_sql` tool 專用,
+    # 應指向 `investor_db_readonly` role(scripts/grant_readonly.sql)。
+    # asyncpg 用,不要帶 `+asyncpg` driver 前綴:postgresql://user:pw@host:port/db
+    # 留空 = 不啟用 SQL tool(其他 tool 不受影響)。
+    mcp_readonly_db_dsn: str = ""
+
 
 settings = Settings()  # type: ignore[call-arg]

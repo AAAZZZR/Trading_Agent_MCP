@@ -1,7 +1,11 @@
-"""15 個 @mcp.tool —— 一對一對應 Trading_Agent 的 REST endpoint。
+"""@mcp.tool —— 對應 Trading_Agent REST endpoint 的 16 個 tool。
 
-每個 tool 內部就是一行 `await api.get(path, params=...)`。
-回傳結構即 Trading_Agent API 的 JSON;LLM 端透過 docstring 理解語意。
+前 15 個 per-domain pre-built(`list_companies` / `get_income_statements` 等)內部
+就是一行 `await api.get(path, params=...)`,LLM 端透過 docstring 理解語意。
+
+第 16 個 `execute_readonly_sql` 給 power user / AI agent 跑任意 SELECT,走獨立
+readonly Postgres 連線(`db.py`),經 sqlparse + readonly role + statement timeout
+三層防護。
 
 之後如要強化 LLM 端 schema 推斷,可在本模組加 pydantic BaseModel 並
 標記 tool 回傳型別 —— 目前以 dict / list[dict] 起步,先求覆蓋度。
@@ -9,11 +13,20 @@
 
 from __future__ import annotations
 
+import json
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from trading_agent_mcp.api_client import api
+from trading_agent_mcp.db import ReadonlyDBNotConfigured, get_pool
 from trading_agent_mcp.server import mcp
-
+from trading_agent_mcp.sql_query import (
+    SQLValidationError,
+    clamp_limit,
+    truncate_payload,
+    validate_select_only,
+)
 
 # ============================================================
 # Companies
@@ -270,3 +283,71 @@ async def get_holders_breakdown(ticker: str) -> dict[str, Any]:
         ticker: 美股代號。
     """
     return await api.get("/api/holdings/major", params={"ticker": ticker.upper()})
+
+
+# ============================================================
+# Free-form readonly SQL
+# ============================================================
+
+
+def _json_default(value: Any) -> Any:
+    """JSON serializer fallback —— date / datetime → ISO,Decimal → str。
+
+    asyncpg Record 轉 dict 後欄位可能是 datetime / Decimal,標準 json 不會 serialize。
+    """
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+@mcp.tool
+async def execute_readonly_sql(query: str) -> str:
+    """跑一段 readonly SELECT,回 JSON 字串(rows + meta)。給需要彈性查詢的 agent / 分析用。
+
+    Schema 14 表:companies, institutions, institution_filings, filings, filing_sections,
+    income_statements, balance_sheets, cash_flow_statements, insider_trades,
+    institutional_holdings, prices_hourly, financials_quarantine, ingest_runs, alembic_version。
+
+    安全保證(三層):
+      1. SQL parsing:只允許單一 SELECT / WITH ... SELECT,拒絕 INSERT/UPDATE/DELETE/DROP 等
+         與 pg_sleep / copy / lo_import 等敏感函式。
+      2. DB role:連線使用 `investor_db_readonly` role(僅 SELECT 權限)。
+      3. Statement timeout:每段查詢 5 秒上限,複雜 query 自動 abort。
+
+    LIMIT 自動處理:
+      - 沒寫 → 自動加 LIMIT 1000。
+      - 寫了 > 10000 → clamp 成 10000。
+      - 寫了 <= 10000 → 不動。
+
+    Output 超過 100KB 會截斷並附註記。
+
+    Args:
+        query: 要執行的 SELECT(單一 statement,不要加多個分號)。
+               範例:`SELECT ticker, name FROM companies WHERE sector = 'Technology' LIMIT 50`
+    """
+    try:
+        validate_select_only(query)
+    except SQLValidationError as exc:
+        return json.dumps({"error": str(exc)})
+
+    safe_query = clamp_limit(query)
+
+    try:
+        pool = await get_pool()
+    except ReadonlyDBNotConfigured as exc:
+        return json.dumps({"error": str(exc)})
+
+    try:
+        async with pool.acquire() as conn:
+            records = await conn.fetch(safe_query)
+    except Exception as exc:  # asyncpg.PostgresError 等 —— 直接 surface 給 LLM 看。
+        return json.dumps({"error": f"Query failed: {exc}"})
+
+    rows = [dict(r) for r in records]
+    payload = json.dumps(
+        {"row_count": len(rows), "executed_query": safe_query, "rows": rows},
+        default=_json_default,
+    )
+    return truncate_payload(payload)
