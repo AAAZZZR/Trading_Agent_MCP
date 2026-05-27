@@ -260,6 +260,32 @@ async def get_latest_price(ticker: str) -> dict[str, Any]:
     return await api.get("/api/prices/latest", params={"ticker": ticker.upper()})
 
 
+@mcp.tool
+async def list_hourly_prices(
+    ticker: str,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 5000,
+) -> list[dict[str, Any]]:
+    """取得每小時 OHLC + 成交量(dt 升冪,timestamptz)。
+
+    粒度比 `list_daily_prices` 細,適合做 intraday 分析或 backtest 對齊。
+    PROD 2026-05 現況:資料 worker 還沒部署,可能回空 list。
+
+    Args:
+        ticker: 美股代號。
+        start: 起始 UTC datetime(ISO,例 "2026-05-22T13:30:00Z"),包含。
+        end: 結束 UTC datetime,包含。
+        limit: 最多幾筆(1-20000,預設 5000)。
+    """
+    params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
+    if start is not None:
+        params["start"] = start
+    if end is not None:
+        params["end"] = end
+    return await api.get("/api/prices/hourly", params=params)
+
+
 # ============================================================
 # Holdings(yfinance 資料源)
 # ============================================================

@@ -26,7 +26,7 @@ async def test_all_tools_registered() -> None:
         "get_income_statements", "get_balance_sheets", "get_cash_flow_statements",
         "get_latest_period",
         "list_insider_trades",
-        "list_daily_prices", "get_latest_price",
+        "list_daily_prices", "get_latest_price", "list_hourly_prices",
         "list_institutional_holders", "get_holders_breakdown",
         "execute_readonly_sql",
     }
@@ -116,6 +116,28 @@ _CASES = [
         {"ticker": "aapl"},
         {"ticker": "AAPL"},
     ),
+    (
+        tools.list_hourly_prices,
+        "/api/prices/hourly",
+        {"ticker": "aapl"},
+        {"ticker": "AAPL", "limit": "5000"},
+    ),
+    (
+        tools.list_hourly_prices,
+        "/api/prices/hourly",
+        {
+            "ticker": "aapl",
+            "start": "2026-05-22T13:30:00Z",
+            "end": "2026-05-22T20:00:00Z",
+            "limit": 100,
+        },
+        {
+            "ticker": "AAPL",
+            "limit": "100",
+            "start": "2026-05-22T13:30:00Z",
+            "end": "2026-05-22T20:00:00Z",
+        },
+    ),
 
     # Holdings
     (
@@ -138,7 +160,7 @@ async def test_tool_calls_correct_endpoint(
     tool_fn, expected_path: str, call_kwargs: dict, expected_query: dict
 ) -> None:
     """每個 tool 應該打到對應的 API path 與正確的 query params。"""
-    fake_response = [] if expected_path.endswith(("companies", "filings", "income", "balance", "cashflow", "insider", "prices", "institutions", "sections")) else {}
+    fake_response = [] if expected_path.endswith(("companies", "filings", "income", "balance", "cashflow", "insider", "prices", "hourly", "institutions", "sections")) else {}
 
     with respx.mock(base_url="http://test-api") as mock:
         # 因為 @mcp.tool 包裝過,直接呼叫 tool_fn.fn 才是底層 async function;
