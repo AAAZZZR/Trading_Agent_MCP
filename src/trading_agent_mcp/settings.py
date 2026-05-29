@@ -19,12 +19,13 @@ class Settings(BaseSettings):
     # 只在 per-user 模式關閉時使用;per-user 模式下留空即可。
     mcp_bearer_token: str = ""
 
-    # Per-user 認證開關。
+    # Per-user 認證開關。預設 True(SaaS 生產模式)。
     #   True  → 每個 user 帶自己的 API key,經 PerUserTokenVerifier 打
     #           /api/mcp/authorize 驗證 + 計量(SaaS 模式)。
-    #   False → 退回單一 mcp_bearer_token 的 StaticTokenVerifier(本機 / 舊行為)。
-    # 注意:per-user 模式還需要 mcp_api_base_url 有值,否則一樣退回 static。
-    mcp_per_user_auth: bool = False
+    #   False → 退回單一 mcp_bearer_token 的 StaticTokenVerifier(舊行為)。
+    # 注意:per-user 模式還需要 mcp_api_base_url 有值,否則一樣退回 static;
+    # stdio 本機開發走 skip_auth,不受此影響。要關掉設環境變數 MCP_PER_USER_AUTH=false。
+    mcp_per_user_auth: bool = True
 
     # PerUserTokenVerifier 的 in-process 快取 TTL(秒)。
     # 只快取「validity / tier」做為 authorize 短暫失敗時的 fallback,
