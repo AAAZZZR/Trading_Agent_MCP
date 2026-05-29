@@ -499,6 +499,256 @@ async def list_13f_top_sellers(
 
 
 # ============================================================
+# Corporate actions(現金股息 / 股票分割,Alpha Vantage)
+# ============================================================
+
+
+@mcp.tool
+async def list_dividends(
+    ticker: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """列出某股票的現金股息(配息)歷史,依除息日(ex_dividend_date)由新到舊。
+
+    給除息跳空判讀,或用 amount 自算還原價(prices 無 adj_close)。
+
+    Args:
+        ticker: 美股代號(自動轉大寫)。
+        limit: 最多回傳幾筆(1-1000,預設 100)。
+        offset: 跳過前 N 筆,分頁用(>=0,預設 0)。
+
+    Returns:
+        list[dict],每筆含 ticker、ex_dividend_date、declaration_date、record_date、
+        payment_date(皆 YYYY-MM-DD,後三者資料源常缺 → null)、amount(每股配息金額,
+        USD)。查無資料回空 list。
+    """
+    return await api.get(
+        f"/api/dividends/{ticker.upper()}",
+        params={"limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool
+async def list_splits(
+    ticker: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """列出某股票的股票分割(split)歷史,依生效日(effective_date)由新到舊。
+
+    給在分割點還原歷史價格序列(prices 無 adj_close)。
+
+    Args:
+        ticker: 美股代號(自動轉大寫)。
+        limit: 最多回傳幾筆(1-1000,預設 100)。
+        offset: 跳過前 N 筆,分頁用(>=0,預設 0)。
+
+    Returns:
+        list[dict],每筆含 ticker、effective_date(YYYY-MM-DD)、split_factor
+        (= 新股數 / 舊股數:2:1 正向分割 → 2.0,1:10 反向分割 → 0.1)。
+        查無資料回空 list。
+    """
+    return await api.get(
+        f"/api/splits/{ticker.upper()}",
+        params={"limit": limit, "offset": offset},
+    )
+
+
+# ============================================================
+# Earnings calendar(即將公布財報日,Alpha Vantage)
+# ============================================================
+
+
+@mcp.tool
+async def list_earnings(
+    ticker: str,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """列出某公司(即將公布)的財報日清單,依公布日(report_date)由舊到新。
+
+    給 swing trader 避開 earnings gap、安排進出場(單 ticker 視角)。要掃整個市場
+    某區間誰公布財報改用 `get_earnings_calendar`。
+
+    Args:
+        ticker: 美股代號(自動轉大寫)。
+        start: 只取此公布日(含)之後(YYYY-MM-DD);省略 = 不設下界。
+        end: 只取此公布日(含)之前(YYYY-MM-DD);省略 = 不設上界。
+        limit: 最多回傳幾筆(1-1000,預設 100)。
+
+    Returns:
+        list[dict],每筆含 ticker、report_date(預定公布日,YYYY-MM-DD)、
+        fiscal_date_ending(對應財報期末,YYYY-MM-DD)、estimate_eps(共識每股盈餘,
+        常缺 → null)、currency(ISO 4217,常缺 → null)、report_time
+        ('pre-market' / 'post-market' / null)。查無資料回空 list。
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if start is not None:
+        params["start"] = start
+    if end is not None:
+        params["end"] = end
+    return await api.get(f"/api/earnings/{ticker.upper()}", params=params)
+
+
+@mcp.tool
+async def get_earnings_calendar(
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """掃整個市場某日期區間內即將公布財報的公司(跨 ticker),依 (report_date, ticker) 由舊到新。
+
+    回答「下週 / 某區間有哪些公司公布財報」。要單一公司的財報日改用 `list_earnings`。
+
+    Args:
+        start: 區間起始公布日(含,YYYY-MM-DD);省略 = 不設下界。
+        end: 區間結束公布日(含,YYYY-MM-DD);省略 = 不設上界。
+        limit: 最多回傳幾筆(1-2000,預設 500)。
+
+    Returns:
+        list[dict],欄位同 `list_earnings`(ticker、report_date、fiscal_date_ending、
+        estimate_eps、currency、report_time)。查無資料回空 list。
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if start is not None:
+        params["start"] = start
+    if end is not None:
+        params["end"] = end
+    return await api.get("/api/earnings/calendar", params=params)
+
+
+# ============================================================
+# ETF(概況 / 成分股 / 反查持有者,Alpha Vantage)
+# ============================================================
+
+
+@mcp.tool
+async def get_etf_profile(ticker: str) -> dict[str, Any]:
+    """取得單一 ETF 的層級 metadata(淨資產 / 費用率 / 配息率 / 是否槓桿等)。
+
+    Args:
+        ticker: ETF 代號(自動轉大寫,例 SPY、QQQ)。
+
+    Returns:
+        dict,欄位含 net_assets(淨資產,USD)、net_expense_ratio、portfolio_turnover、
+        dividend_yield(此三者為 0-1 小數,乘 100 才是百分比)、inception_date
+        (YYYY-MM-DD)、leveraged(bool,是否槓桿型)、updated_at(ISO datetime,本表
+        最近刷新時間)。多數欄位 nullable。查無此 ETF → tool error(後端 404)。
+    """
+    return await api.get(f"/api/etf/{ticker.upper()}/profile")
+
+
+@mcp.tool
+async def list_etf_holdings(
+    ticker: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """列出某 ETF 的成分股 + 權重,依權重(weight)由大到小(top holdings 先),分頁。
+
+    Args:
+        ticker: ETF 代號(自動轉大寫,例 SPY)。
+        limit: 最多回傳幾筆(1-1000,預設 100)。
+        offset: 跳過前 N 筆,分頁用(>=0,預設 0)。
+
+    Returns:
+        list[dict],每筆含 etf_ticker、holding_symbol(成分標的代號,可能是現金 / 海外 /
+        未收錄標的)、description(成分名稱,常缺 → null)、weight(占該 ETF 淨值比例,
+        0-1 小數而非百分比;null 排最後)。查無資料回空 list。
+    """
+    return await api.get(
+        f"/api/etf/{ticker.upper()}/holdings",
+        params={"limit": limit, "offset": offset},
+    )
+
+
+@mcp.tool
+async def list_etfs_holding_ticker(
+    ticker: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """反查:有哪些 ETF 持有某個 symbol,依該 symbol 在各 ETF 的權重由大到小,分頁。
+
+    跟 `list_etf_holdings`(由 ETF 看成分)方向相反:這裡由個股 / 標的反查持有它的 ETF,
+    給被動資金流判讀(哪些 ETF 重壓這檔)。
+
+    Args:
+        ticker: 被持有的 symbol(個股或其他標的,自動轉大寫,例 AAPL)。
+        limit: 最多回傳幾筆(1-1000,預設 100)。
+        offset: 跳過前 N 筆,分頁用(>=0,預設 0)。
+
+    Returns:
+        list[dict],欄位同 `list_etf_holdings`(etf_ticker、holding_symbol、description、
+        weight 為 0-1 小數)。查無資料回空 list。
+    """
+    return await api.get(
+        f"/api/etf/holders/{ticker.upper()}",
+        params={"limit": limit, "offset": offset},
+    )
+
+
+# ============================================================
+# Macro(總經 / 商品 / 指數 時間序列,單位看 catalog)
+# ============================================================
+
+
+@mcp.tool
+async def list_macro_series(category: str | None = None) -> list[dict[str, Any]]:
+    """列出可查的總經 / 商品 / 指數 series 目錄(自我描述字典),依 (category, series_id) 排序。
+
+    這是查觀測值前的「目錄」步驟:先在這裡挑出 series_id 與看它的 `unit`,再帶 series_id
+    去 `get_macro_series` 取時間序列(觀測值本身不帶單位)。
+
+    Args:
+        category: 按類別過濾,'macro' / 'commodity' / 'index';省略 = 全部。
+
+    Returns:
+        list[dict],每筆含 series_id(查觀測值用的代碼,區分大小寫)、name(人類可讀)、
+        unit(觀測值單位,如 'percent' / 'USD' / 'index',常缺 → null)、frequency
+        ('monthly' / 'quarterly' / 'daily' / 'annual' 等)、category、updated_at
+        (ISO datetime)。
+    """
+    params: dict[str, Any] = {}
+    if category is not None:
+        params["category"] = category
+    return await api.get("/api/macro/series", params=params)
+
+
+@mcp.tool
+async def get_macro_series(
+    series_id: str,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 2000,
+) -> list[dict[str, Any]]:
+    """取得某 series 的觀測時間序列,依日期升冪(最舊在前),邊界 inclusive。
+
+    series_id 區分大小寫,請用 `list_macro_series` 目錄拿到的原值(例 CPI、
+    TREASURY_YIELD_10YEAR、WTI、INDEX_VIX)。注意:**value 的單位不在本回應裡** ——
+    要去 `list_macro_series` 查該 series 的 `unit` 欄位。
+
+    Args:
+        series_id: series 代碼(區分大小寫,來自 `list_macro_series`)。
+        start: 起始日(含,YYYY-MM-DD);省略 = 不設下界。
+        end: 結束日(含,YYYY-MM-DD);省略 = 不設上界。
+        limit: 最多回傳幾筆(1-10000,預設 2000)。
+
+    Returns:
+        list[dict],每筆含 series_id、date(YYYY-MM-DD)、value(數值,單位見目錄的
+        `unit`)。series_id 不存在或區間無資料回空 list。
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if start is not None:
+        params["start"] = start
+    if end is not None:
+        params["end"] = end
+    return await api.get(f"/api/macro/series/{series_id}", params=params)
+
+
+# ============================================================
 # Screener(跨 ticker 篩選)
 # ============================================================
 
@@ -578,9 +828,11 @@ async def execute_readonly_sql(query: str) -> str:
     需 pro tier(權限不足者看不到此 tool)。下 SQL 前不確定欄位?先用 `describe_table`
     自省(不帶參數 = 列出所有 table;帶 table 名 = 列出該表欄位 + 型別)。
 
-    可查的 14 張 table:companies, institutions, institution_filings, filings, filing_sections,
+    可查的 table:companies, institutions, institution_filings, filings, filing_sections,
     income_statements, balance_sheets, cash_flow_statements, insider_trades,
-    institutional_holdings, prices_hourly, financials_quarantine, ingest_runs, alembic_version。
+    institutional_holdings, prices_hourly, financials_quarantine, ingest_runs, alembic_version,
+    dividends, splits, earnings_calendar, etf_profile, etf_holdings, macro_series,
+    macro_series_meta。實際清單以 describe_table()(不帶參數)為準。
 
     安全保證(三層):
       1. SQL parsing:只允許單一 SELECT / WITH ... SELECT,拒絕 INSERT/UPDATE/DELETE/DROP 等

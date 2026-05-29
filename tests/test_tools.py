@@ -34,6 +34,10 @@ async def test_all_tools_registered() -> None:
         "list_institutional_holders", "get_holders_breakdown",
         "list_13f_holders", "list_13f_portfolio",
         "list_13f_top_buyers", "list_13f_top_sellers",
+        "list_dividends", "list_splits",
+        "list_earnings", "get_earnings_calendar",
+        "get_etf_profile", "list_etf_holdings", "list_etfs_holding_ticker",
+        "list_macro_series", "get_macro_series",
         "screen_insider_buys",
         "execute_readonly_sql", "describe_table",
     }
@@ -202,6 +206,104 @@ _CASES = [
         "/api/13f/top-sellers",
         {"ticker": "aapl"},
         {"ticker": "AAPL", "limit": "50"},
+    ),
+
+    # Corporate actions (dividends / splits)
+    (
+        tools.list_dividends,
+        "/api/dividends/AAPL",
+        {"ticker": "aapl"},
+        {"limit": "100", "offset": "0"},
+    ),
+    (
+        tools.list_dividends,
+        "/api/dividends/AAPL",
+        {"ticker": "aapl", "limit": 10, "offset": 20},
+        {"limit": "10", "offset": "20"},
+    ),
+    (
+        tools.list_splits,
+        "/api/splits/MSFT",
+        {"ticker": "msft"},
+        {"limit": "100", "offset": "0"},
+    ),
+
+    # Earnings calendar
+    (
+        tools.list_earnings,
+        "/api/earnings/AAPL",
+        {"ticker": "aapl"},
+        {"limit": "100"},
+    ),
+    (
+        tools.list_earnings,
+        "/api/earnings/AAPL",
+        {"ticker": "aapl", "start": "2026-01-01", "end": "2026-06-30", "limit": 50},
+        {"limit": "50", "start": "2026-01-01", "end": "2026-06-30"},
+    ),
+    (
+        tools.get_earnings_calendar,
+        "/api/earnings/calendar",
+        {},
+        {"limit": "500"},
+    ),
+    (
+        tools.get_earnings_calendar,
+        "/api/earnings/calendar",
+        {"start": "2026-06-01", "end": "2026-06-07", "limit": 100},
+        {"limit": "100", "start": "2026-06-01", "end": "2026-06-07"},
+    ),
+
+    # ETF
+    (
+        tools.get_etf_profile,
+        "/api/etf/SPY/profile",
+        {"ticker": "spy"},
+        {},
+    ),
+    (
+        tools.list_etf_holdings,
+        "/api/etf/SPY/holdings",
+        {"ticker": "spy"},
+        {"limit": "100", "offset": "0"},
+    ),
+    (
+        tools.list_etf_holdings,
+        "/api/etf/SPY/holdings",
+        {"ticker": "spy", "limit": 25, "offset": 50},
+        {"limit": "25", "offset": "50"},
+    ),
+    (
+        tools.list_etfs_holding_ticker,
+        "/api/etf/holders/AAPL",
+        {"ticker": "aapl"},
+        {"limit": "100", "offset": "0"},
+    ),
+
+    # Macro
+    (
+        tools.list_macro_series,
+        "/api/macro/series",
+        {},
+        {},
+    ),
+    (
+        tools.list_macro_series,
+        "/api/macro/series",
+        {"category": "commodity"},
+        {"category": "commodity"},
+    ),
+    (
+        tools.get_macro_series,
+        "/api/macro/series/CPI",
+        {"series_id": "CPI"},
+        {"limit": "2000"},
+    ),
+    (
+        tools.get_macro_series,
+        "/api/macro/series/TREASURY_YIELD_10YEAR",
+        {"series_id": "TREASURY_YIELD_10YEAR", "start": "2020-01-01", "limit": 500},
+        {"limit": "500", "start": "2020-01-01"},
     ),
 
     # Screener (cross-ticker)
