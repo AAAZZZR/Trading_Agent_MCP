@@ -49,9 +49,12 @@ def _build_auth() -> TokenVerifier | None:
 mcp = FastMCP(
     name="investor-db",
     instructions=(
-        "美股市場資料查詢 —— 公司基本資料、SEC filings(10-K / 10-Q / 8-K / Form 4)、"
-        "財務報表(損益 / 資產負債 / 現金流)、每日股價、內部人交易、機構持股。"
-        "資料來源是 investor-db 後端 API。所有金額單位為 USD,日期為 YYYY-MM-DD ISO 格式。"
+        "美股市場資料查詢 —— 公司基本資料與搜尋、SEC filings(10-K / 10-Q / 8-K / Form 4)、"
+        "財務報表(損益 / 資產負債 / 現金流)、每日 / 每小時股價、內部人交易與跨市場篩選、"
+        "機構持股(yfinance 概覽 + 第一手 SEC 13F)。資料來源是 investor-db 後端 API。"
+        "所有金額單位為 USD,日期為 YYYY-MM-DD ISO 格式。\n"
+        "選工具:不知道精確 ticker 用 search_companies;要彈性 / 統計查詢用 "
+        "execute_readonly_sql,下手前先用 describe_table 看欄位(兩者需 pro tier)。"
     ),
     auth=_build_auth(),
 )

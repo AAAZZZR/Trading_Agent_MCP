@@ -1,7 +1,7 @@
 """tools.py 的單元測試 —— 每個 @mcp.tool 呼叫對的 URL + params。
 
 策略:用 respx 攔截 module-level singleton `api` 的 httpx call,驗:
-  1. 15 個 tool 都註冊到 mcp。
+  1. 所有 HTTP-backed tool 都註冊到 mcp。
   2. 每個 tool 對應正確的 API endpoint + 方法 + 預設 params。
   3. ticker 自動 upper-case。
 """
@@ -16,23 +16,26 @@ from trading_agent_mcp.server import mcp
 
 
 async def test_all_tools_registered() -> None:
-    """server 啟動時 tools 模組被 import,16 個 @mcp.tool 都掛上去。
+    """server 啟動時 tools 模組被 import,所有 @mcp.tool 都掛上去。
 
     用 provider 層 list_tools(未經 auth 過濾):mcp.list_tools() 會對
-    execute_readonly_sql 做 tier:pro gating,無 auth context 時會藏起來。
+    execute_readonly_sql / describe_table 做 tier:pro gating,無 auth context 時會藏起來。
     """
     registered = await mcp._local_provider.list_tools()
     names = {t.name for t in registered}
 
     expected = {
-        "list_companies", "get_company",
+        "list_companies", "search_companies", "get_company",
         "list_filings", "get_filing", "list_filing_sections", "get_filing_section",
         "get_income_statements", "get_balance_sheets", "get_cash_flow_statements",
         "get_latest_period",
         "list_insider_trades",
         "list_daily_prices", "get_latest_price", "list_hourly_prices",
         "list_institutional_holders", "get_holders_breakdown",
-        "execute_readonly_sql",
+        "list_13f_holders", "list_13f_portfolio",
+        "list_13f_top_buyers", "list_13f_top_sellers",
+        "screen_insider_buys",
+        "execute_readonly_sql", "describe_table",
     }
     assert names == expected, f"missing: {expected - names}, extra: {names - expected}"
 
@@ -48,6 +51,18 @@ async def test_all_tools_registered() -> None:
 _CASES = [
     # Companies
     (tools.list_companies, "/api/companies", {}, {}),
+    (
+        tools.search_companies,
+        "/api/companies/search",
+        {"q": "apple"},
+        {"q": "apple", "limit": "20"},
+    ),
+    (
+        tools.search_companies,
+        "/api/companies/search",
+        {"q": "nvda", "limit": 5},
+        {"q": "nvda", "limit": "5"},
+    ),
     (tools.get_company, "/api/companies/AAPL", {"ticker": "aapl"}, {}),
 
     # Filings
@@ -155,6 +170,58 @@ _CASES = [
         "/api/holdings/major",
         {"ticker": "aapl"},
         {"ticker": "AAPL"},
+    ),
+
+    # 13F (first-party SEC)
+    (
+        tools.list_13f_holders,
+        "/api/13f/holders",
+        {"ticker": "aapl"},
+        {"ticker": "AAPL", "limit": "100"},
+    ),
+    (
+        tools.list_13f_holders,
+        "/api/13f/holders",
+        {"ticker": "aapl", "quarter_end": "2024-12-31", "limit": 10},
+        {"ticker": "AAPL", "quarter_end": "2024-12-31", "limit": "10"},
+    ),
+    (
+        tools.list_13f_portfolio,
+        "/api/13f/portfolio",
+        {"cik": "0001067983"},
+        {"cik": "0001067983", "limit": "100"},
+    ),
+    (
+        tools.list_13f_top_buyers,
+        "/api/13f/top-buyers",
+        {"ticker": "aapl"},
+        {"ticker": "AAPL", "limit": "50"},
+    ),
+    (
+        tools.list_13f_top_sellers,
+        "/api/13f/top-sellers",
+        {"ticker": "aapl"},
+        {"ticker": "AAPL", "limit": "50"},
+    ),
+
+    # Screener (cross-ticker)
+    (
+        tools.screen_insider_buys,
+        "/api/screener/insider-buys",
+        {},
+        {"transaction_code": "P", "since_days": "90", "limit": "100"},
+    ),
+    (
+        tools.screen_insider_buys,
+        "/api/screener/insider-buys",
+        {"insider_title_contains": "CEO", "market_cap_min": 1000000.0, "since_days": 30},
+        {
+            "transaction_code": "P",
+            "since_days": "30",
+            "limit": "100",
+            "insider_title_contains": "CEO",
+            "market_cap_min": "1000000.0",
+        },
     ),
 ]
 

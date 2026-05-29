@@ -31,6 +31,7 @@ async def test_execute_readonly_sql_registered() -> None:
     registered = await mcp._local_provider.list_tools()
     names = {t.name for t in registered}
     assert "execute_readonly_sql" in names
+    assert "describe_table" in names
 
 
 # ---- helper:把 fake pool 塞進 db._pool -----------------------------------
@@ -182,3 +183,62 @@ async def test_db_error_returned_as_friendly_error(patched_pool) -> None:
     payload = json.loads(result)
     assert "error" in payload
     assert "syntax error" in payload["error"]
+
+
+# ---- describe_table:schema 自省 ----------------------------------------
+
+
+async def test_describe_table_lists_tables_when_no_arg(patched_pool) -> None:
+    """不帶 table_name → 回所有 table 名(查 information_schema.tables)。"""
+    pool, conn = _make_fake_pool(
+        [{"table_name": "companies"}, {"table_name": "prices_hourly"}]
+    )
+
+    with patch.object(tools, "get_pool", AsyncMock(return_value=pool)):
+        result = await tools.describe_table()
+
+    payload = json.loads(result)
+    assert payload["tables"] == ["companies", "prices_hourly"]
+    # 沒有帶 bind param(列 table 用無參數 query)
+    conn.fetch.assert_awaited_once()
+    assert len(conn.fetch.call_args.args) == 1  # 只有 SQL,沒有 $1
+
+
+async def test_describe_table_returns_columns(patched_pool) -> None:
+    """帶 table_name → 回欄位 + 型別,且 table 名以 bind param($1)傳入。"""
+    pool, conn = _make_fake_pool(
+        [
+            {"column_name": "ticker", "data_type": "text", "is_nullable": "NO"},
+            {"column_name": "cik", "data_type": "text", "is_nullable": "YES"},
+        ]
+    )
+
+    with patch.object(tools, "get_pool", AsyncMock(return_value=pool)):
+        result = await tools.describe_table(table_name="companies")
+
+    payload = json.loads(result)
+    assert payload["table"] == "companies"
+    assert payload["columns"][0]["column_name"] == "ticker"
+    # table 名走 asyncpg bind param,不拼進 SQL 字串(防注入)
+    sent_args = conn.fetch.call_args.args
+    assert sent_args[1] == "companies"
+
+
+async def test_describe_table_unknown_table_returns_error(patched_pool) -> None:
+    """查無此表(空欄位)→ friendly error,提示用 describe_table() 列表。"""
+    pool, _ = _make_fake_pool([])
+
+    with patch.object(tools, "get_pool", AsyncMock(return_value=pool)):
+        result = await tools.describe_table(table_name="does_not_exist")
+
+    payload = json.loads(result)
+    assert "error" in payload
+    assert "does_not_exist" in payload["error"]
+
+
+async def test_describe_table_no_dsn_returns_friendly_error(patched_pool) -> None:
+    """DSN 沒設 → friendly error(跟 execute_readonly_sql 一致)。"""
+    result = await tools.describe_table(table_name="companies")
+    payload = json.loads(result)
+    assert "error" in payload
+    assert "MCP_READONLY_DB_DSN" in payload["error"]
