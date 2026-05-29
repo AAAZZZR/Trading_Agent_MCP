@@ -12,10 +12,24 @@ class Settings(BaseSettings):
     mcp_api_base_url: str
 
     # Service-to-service bearer:MCP server → Trading_Agent API
+    #   per-user 模式下也拿來打 /api/mcp/authorize(驗證 user key)。
     mcp_api_auth_token: str
 
-    # Client bearer:Claude.ai / Desktop → 本 MCP server
-    mcp_bearer_token: str
+    # Client bearer:Claude.ai / Desktop → 本 MCP server(單一共用 token)。
+    # 只在 per-user 模式關閉時使用;per-user 模式下留空即可。
+    mcp_bearer_token: str = ""
+
+    # Per-user 認證開關。
+    #   True  → 每個 user 帶自己的 API key,經 PerUserTokenVerifier 打
+    #           /api/mcp/authorize 驗證 + 計量(SaaS 模式)。
+    #   False → 退回單一 mcp_bearer_token 的 StaticTokenVerifier(本機 / 舊行為)。
+    # 注意:per-user 模式還需要 mcp_api_base_url 有值,否則一樣退回 static。
+    mcp_per_user_auth: bool = False
+
+    # PerUserTokenVerifier 的 in-process 快取 TTL(秒)。
+    # 只快取「validity / tier」做為 authorize 短暫失敗時的 fallback,
+    # 不取代每次 POST(計量與配額仍以後端為準)。詳見 auth.py。
+    mcp_authorize_cache_ttl: float = 20.0
 
     # Streamable HTTP transport port(Zeabur 會以 $PORT 蓋過)
     port: int = 8000

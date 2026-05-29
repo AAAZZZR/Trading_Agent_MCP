@@ -1,6 +1,7 @@
 """`python -m trading_agent_mcp` 入口。
 
-預設 Streamable HTTP transport(對外開,需 bearer auth)。
+預設 Streamable HTTP transport(對外開,auth 模式見 server.py `_build_auth()`:
+per-user / 共用 token / 無 auth)。
 本機開發給 Claude Desktop 連時:`python -m trading_agent_mcp --stdio` 切到 stdio。
 """
 
@@ -18,8 +19,7 @@ def main() -> None:
         mcp.run(transport="stdio")
         return
 
-    # Streamable HTTP:對外服務。Auth 由 FastMCP 設定(若框架版本有支援);
-    # 否則退到 Starlette middleware 自行驗 bearer(見 README 部署段)。
+    # Streamable HTTP:對外服務。Auth 由 FastMCP verifier 處理(見 _build_auth)。
     mcp.run(
         transport="streamable-http",
         host="0.0.0.0",

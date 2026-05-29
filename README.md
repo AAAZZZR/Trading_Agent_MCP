@@ -20,6 +20,20 @@ PostgreSQL(via SQLAlchemy 2.0 async)
 
 跟 `Trading_Agent` 是分開的 GitHub repo,但在 Zeabur 部署時可以放同一個 project / 同一台 server,透過 `<service>.zeabur.internal` 私網互通。可遷移性:所有平台依賴透過環境變數注入,搬 AWS / Cloud Run 只改變數值。
 
+### 認證(三種模式,`_build_auth()` 依 settings 擇一)
+
+| 模式 | 啟用條件 | 行為 |
+|---|---|---|
+| **Per-user(SaaS)** | `MCP_PER_USER_AUTH=true` 且 `MCP_API_BASE_URL` 有值 | 每個 user 帶自己的 API key;`PerUserTokenVerifier` 對「每次請求」打後端 `POST /api/mcp/authorize`(帶 service token)驗證 + 計量。`ok=true` 回 `AccessToken`(scopes 反映 tier);`ok=false` / HTTP error 回 `None` → 401。 |
+| **共用 token** | per-user 關 + `MCP_BEARER_TOKEN` 非空 | `StaticTokenVerifier` 驗單一共用 token(scope = `tier:pro`,完整權限)。向後相容舊部署。 |
+| **無 auth** | 兩者皆無 | 不啟用 verifier(stdio 本機開發用)。 |
+
+本 server 不公告 OAuth metadata(verifier 不掛 `.well-known` route),所以 client 拿到 401 會直接顯示認證失敗,不會誤入 OAuth 流程。
+
+**Tier gating**:`execute_readonly_sql`(重量級自由 SQL)用 `require_scopes("tier:pro")` 在 FastMCP 元件層 gating —— free tier(`tier:free`)在 `tools/list` 看不到此 tool,直接呼叫也被擋;其餘 structured tool free / pro 都能用。
+
+**快取取捨**:per-user 模式有一個 ~20s 的 in-process 快取,但「只」存 validity / tier,做為 authorize 短暫失敗(網路抖動 / 5xx)時的 fallback,不取代每次 POST —— 計量與配額永遠以後端每次呼叫為準。
+
 ## Tools(16 個)
 
 15 個 per-domain tool 對齊 Trading_Agent 的 `lib/api.ts`,再加 1 個自由 SQL tool:
@@ -117,5 +131,6 @@ uv run pytest -q
 ## TODO
 
 - [x] Bearer auth(StaticTokenVerifier)—— 完成於 commit `0f86383`,server.py `_build_auth()`
+- [x] Per-user API-key auth(PerUserTokenVerifier)+ tier gating —— `auth.py`,打後端 `/api/mcp/authorize`
 - [ ] 強化 tool return type(用 pydantic model 取代 dict,LLM 端 schema 更豐富)
 - [ ] 加 `list_companies` 的分頁 / 篩選(目前一次回全美股 5000+ 筆)

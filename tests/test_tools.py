@@ -16,8 +16,12 @@ from trading_agent_mcp.server import mcp
 
 
 async def test_all_tools_registered() -> None:
-    """server 啟動時 tools 模組被 import,16 個 @mcp.tool 都掛上去。"""
-    registered = await mcp.list_tools()
+    """server 啟動時 tools 模組被 import,16 個 @mcp.tool 都掛上去。
+
+    用 provider 層 list_tools(未經 auth 過濾):mcp.list_tools() 會對
+    execute_readonly_sql 做 tier:pro gating,無 auth context 時會藏起來。
+    """
+    registered = await mcp._local_provider.list_tools()
     names = {t.name for t in registered}
 
     expected = {

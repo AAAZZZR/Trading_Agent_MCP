@@ -26,7 +26,9 @@ from trading_agent_mcp.server import mcp
 
 
 async def test_execute_readonly_sql_registered() -> None:
-    registered = await mcp.list_tools()
+    # 用 provider 層的 list_tools(未經 auth 過濾)驗「註冊」這件事 ——
+    # mcp.list_tools() 會做 tier gating,無 auth context 時會把此 tool 藏起來。
+    registered = await mcp._local_provider.list_tools()
     names = {t.name for t in registered}
     assert "execute_readonly_sql" in names
 

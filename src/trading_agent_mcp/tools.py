@@ -18,6 +18,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
+from fastmcp.server.auth import require_scopes
+
 from trading_agent_mcp.api_client import api
 from trading_agent_mcp.db import ReadonlyDBNotConfigured, get_pool
 from trading_agent_mcp.server import mcp
@@ -328,9 +330,16 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
-@mcp.tool
+# Tier gating:execute_readonly_sql 是重量級 tool(自由 SQL),只開給 pro tier。
+# require_scopes("tier:pro") 由 FastMCP 在元件層 enforce —— free tier(scopes 只有
+# tier:free)在 list_tools 看不到此 tool,直接呼叫也會被擋(get_tool 回 None)。
+# 其餘 structured tool 不加 auth,free / pro 都能用。
+# 注意:auth 關閉(無 verifier)或 stdio 本機開發時框架會 skip_auth,此 gating 不生效。
+@mcp.tool(auth=require_scopes("tier:pro"))
 async def execute_readonly_sql(query: str) -> str:
     """跑一段 readonly SELECT,回 JSON 字串(rows + meta)。給需要彈性查詢的 agent / 分析用。
+
+    需 pro tier(權限不足者看不到此 tool)。
 
     Schema 14 表:companies, institutions, institution_filings, filings, filing_sections,
     income_statements, balance_sheets, cash_flow_statements, insider_trades,
