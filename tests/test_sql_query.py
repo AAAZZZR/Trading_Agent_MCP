@@ -96,7 +96,7 @@ def test_validate_rejects_sensitive(sql: str) -> None:
         validate_select_only(sql)
 
 
-# ---- clamp_limit:沒寫 → 加 -----------------------------------------------
+# ---- clamp_limit:沒寫 → 外層補 default -----------------------------------
 
 
 def test_clamp_adds_default_when_missing() -> None:
@@ -104,35 +104,47 @@ def test_clamp_adds_default_when_missing() -> None:
     assert f"LIMIT {DEFAULT_LIMIT}" in out
 
 
-def test_clamp_adds_default_before_semicolon() -> None:
+def test_clamp_keeps_semicolon_query_valid() -> None:
     out = clamp_limit("SELECT * FROM companies;")
-    # 該在 ; 之前;結尾留 ;
-    assert out.rstrip().endswith(";")
-    assert f"LIMIT {DEFAULT_LIMIT};" in out
+    assert f"LIMIT {DEFAULT_LIMIT}" in out
+    assert ";" not in out
 
 
-# ---- clamp_limit:過大 → clamp --------------------------------------------
+# ---- clamp_limit:過大 → clamp 成外層 MAX ----------------------------------
 
 
 def test_clamp_clamps_when_too_big() -> None:
     out = clamp_limit("SELECT * FROM companies LIMIT 99999")
-    assert f"LIMIT {MAX_LIMIT}" in out
-    assert "LIMIT 99999" not in out
+    assert out.rstrip().endswith(f"LIMIT {MAX_LIMIT}")
 
 
 def test_clamp_case_insensitive() -> None:
     out = clamp_limit("SELECT * FROM companies limit 99999")
-    assert str(MAX_LIMIT) in out
+    assert out.rstrip().endswith(f"LIMIT {MAX_LIMIT}")
 
 
-# ---- clamp_limit:合理範圍 → 不動 ----------------------------------------
+# ---- clamp_limit:合理頂層 LIMIT → 外層沿用該值 ---------------------------
 
 
 @pytest.mark.parametrize("n", [1, 50, 1000, MAX_LIMIT])
-def test_clamp_leaves_reasonable_limit_alone(n: int) -> None:
-    sql = f"SELECT * FROM companies LIMIT {n}"
+def test_clamp_respects_reasonable_top_limit(n: int) -> None:
+    out = clamp_limit(f"SELECT * FROM companies LIMIT {n}")
+    assert out.rstrip().endswith(f"LIMIT {n}")
+
+
+# ---- clamp_limit:內層 LIMIT 不可繞過外層上界(本次修復回歸)--------------
+
+
+def test_clamp_inner_limit_does_not_bypass() -> None:
+    sql = "SELECT * FROM insider_trades WHERE ticker IN (SELECT ticker FROM companies LIMIT 5)"
     out = clamp_limit(sql)
-    assert out == sql
+    assert "LIMIT 5" in out  # 內層原樣保留
+    assert out.rstrip().endswith(f"LIMIT {DEFAULT_LIMIT}")  # 外層補 default
+
+
+def test_clamp_inner_limit_with_top_limit() -> None:
+    out = clamp_limit("SELECT * FROM (SELECT 1 LIMIT 3) x LIMIT 88888")
+    assert out.rstrip().endswith(f"LIMIT {MAX_LIMIT}")
 
 
 # ---- truncate_payload -----------------------------------------------------

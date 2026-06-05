@@ -39,6 +39,9 @@ async def test_all_tools_registered() -> None:
         "get_etf_profile", "list_etf_holdings", "list_etfs_holding_ticker",
         "list_macro_series", "get_macro_series",
         "screen_insider_buys",
+        "get_analysis", "get_objective_report", "get_overview",
+        "get_options_chain", "get_option_expirations", "get_option_contract_history",
+        "search_institutions", "get_institution", "list_etf_sectors",
         "execute_readonly_sql", "describe_table",
     }
     assert names == expected, f"missing: {expected - names}, extra: {names - expected}"
@@ -129,13 +132,13 @@ _CASES = [
     # Prices
     (
         tools.list_daily_prices,
-        "/api/prices",
+        "/api/prices/daily",
         {"ticker": "aapl", "start": "2024-01-01", "end": "2024-12-31"},
-        {"ticker": "AAPL", "limit": "1000", "start": "2024-01-01", "end": "2024-12-31"},
+        {"ticker": "AAPL", "limit": "2000", "start": "2024-01-01", "end": "2024-12-31"},
     ),
     (
         tools.get_latest_price,
-        "/api/prices/latest",
+        "/api/prices/daily/latest",
         {"ticker": "aapl"},
         {"ticker": "AAPL"},
     ),
@@ -325,6 +328,62 @@ _CASES = [
             "market_cap_min": "1000000.0",
         },
     ),
+
+    # Analysis / Report / Overview
+    (tools.get_analysis, "/api/analysis/AAPL", {"ticker": "aapl"}, {}),
+    (
+        tools.get_objective_report,
+        "/api/report/AAPL",
+        {"ticker": "aapl"},
+        {"statements_limit": "8", "insider_limit": "20", "holders_limit": "10",
+         "filings_limit": "5", "recent_price_bars": "30"},
+    ),
+    (tools.get_overview, "/api/overview/AAPL", {"ticker": "aapl"}, {}),
+
+    # Options
+    (
+        tools.get_options_chain,
+        "/api/options/chain",
+        {"underlying": "aapl"},
+        {"underlying": "AAPL", "limit": "250"},
+    ),
+    (
+        tools.get_options_chain,
+        "/api/options/chain",
+        {"underlying": "aapl", "as_of": "2026-06-03", "expiration": "2026-06-03",
+         "option_type": "call", "limit": 5},
+        {"underlying": "AAPL", "limit": "5", "as_of": "2026-06-03",
+         "expiration": "2026-06-03", "option_type": "call"},
+    ),
+    (
+        tools.get_option_expirations,
+        "/api/options/expirations",
+        {"underlying": "aapl"},
+        {"underlying": "AAPL"},
+    ),
+    (
+        tools.get_option_contract_history,
+        "/api/options/contract/AAPL260605C00200000",
+        {"contract_id": "AAPL260605C00200000"},
+        {"limit": "2000"},
+    ),
+
+    # 13F institutions
+    (
+        tools.search_institutions,
+        "/api/13f/institutions/search",
+        {"q": "berkshire"},
+        {"q": "berkshire", "limit": "20"},
+    ),
+    (
+        tools.get_institution,
+        "/api/13f/institutions/0001067983",
+        {"cik": "0001067983"},
+        {},
+    ),
+
+    # ETF sectors
+    (tools.list_etf_sectors, "/api/etf/SPY/sectors", {"ticker": "spy"}, {}),
 ]
 
 
@@ -333,7 +392,7 @@ async def test_tool_calls_correct_endpoint(
     tool_fn, expected_path: str, call_kwargs: dict, expected_query: dict
 ) -> None:
     """每個 tool 應該打到對應的 API path 與正確的 query params。"""
-    fake_response = [] if expected_path.endswith(("companies", "filings", "income", "balance", "cashflow", "insider", "prices", "hourly", "institutions", "sections")) else {}
+    fake_response = [] if expected_path.endswith(("companies", "filings", "income", "balance", "cashflow", "insider", "prices", "daily", "hourly", "institutions", "sections", "sectors", "expirations")) else {}
 
     with respx.mock(base_url="http://test-api") as mock:
         # 因為 @mcp.tool 包裝過,直接呼叫 tool_fn.fn 才是底層 async function;

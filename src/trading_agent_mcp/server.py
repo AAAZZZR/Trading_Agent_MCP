@@ -50,15 +50,18 @@ mcp = FastMCP(
     name="investor-db",
     instructions=(
         "美股市場資料查詢 —— 公司基本資料與搜尋、SEC filings(10-K / 10-Q / 8-K / Form 4)、"
-        "財務報表(損益 / 資產負債 / 現金流)、每日 / 每小時股價、內部人交易與跨市場篩選、"
-        "機構持股(yfinance 概覽 + 第一手 SEC 13F)、公司行動(現金股息 / 股票分割)、"
-        "財報行事曆(單一公司 + 跨市場區間掃描)、ETF 透視(概況 / 成分股 / 反查持有它的 ETF)、"
-        "總經 / 商品 / 指數 時間序列。資料來源是 investor-db 後端 API。"
+        "財務報表(損益 / 資產負債 / 現金流)、估值快照(市值 / 本益比家族 / 均線)、"
+        "第一手日 K(~5 年)/ 每小時股價、內部人交易與跨市場篩選、"
+        "機構持股(yfinance 概覽 + 第一手 SEC 13F + filer 反查)、公司行動(現金股息 / 股票分割)、"
+        "財報行事曆(單一公司 + 跨市場區間掃描)、ETF 透視(概況 / 成分股 / 類股權重 / 反查持有它的 ETF)、"
+        "期權鏈(EOD 報價 / IV / greeks)、總經 / 商品 / 指數 時間序列,以及兩個整合視角:"
+        "四面向紅綠燈分析(get_analysis,帶解讀)與客觀數據包(get_objective_report,純數據)。"
+        "資料來源是 investor-db 後端 API。"
         "金額單位為 USD,日期為 YYYY-MM-DD ISO 格式;例外:ETF weight 與費用率 / 配息率為 "
         "0-1 小數(非百分比),macro 觀測值單位逐 series 不同,須查 list_macro_series 的 unit 欄位。\n"
-        "選工具:不知道精確 ticker 用 search_companies;查 macro 觀測值前先用 list_macro_series "
-        "拿 series_id 與單位;要彈性 / 統計查詢用 execute_readonly_sql,下手前先用 describe_table "
-        "看欄位(兩者需 pro tier)。"
+        "選工具:不知道精確 ticker 用 search_companies;要快速結論用 get_analysis,要自己分析的原料用 "
+        "get_objective_report;查 macro 觀測值前先用 list_macro_series 拿 series_id 與單位;"
+        "要彈性 / 統計查詢用 execute_readonly_sql,下手前先用 describe_table 看欄位(兩者需 pro tier)。"
     ),
     auth=_build_auth(),
 )

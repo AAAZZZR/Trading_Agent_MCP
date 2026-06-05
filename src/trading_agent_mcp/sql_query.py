@@ -4,7 +4,9 @@
 
 1. `validate_select_only(sql)` —— 用 sqlparse 解,只放行 SELECT / WITH ... SELECT,
    拒絕多 statement、拒絕含敏感 function(pg_sleep / copy / lo_import 等)。
-2. `clamp_limit(sql)` —— 沒寫 LIMIT 自動加 LIMIT DEFAULT_LIMIT;LIMIT > MAX 改成 MAX。
+2. `clamp_limit(sql)` —— 用 sqlparse 取頂層 LIMIT 算上界(無→DEFAULT_LIMIT,
+   有 N→min(N, MAX_LIMIT)),再把查詢包成 `SELECT * FROM (<sql>) _ LIMIT 上界`,
+   外層硬界一定生效(關死子查詢內 LIMIT 繞過)。
 3. `truncate_payload(text)` —— serialize 後超過 MAX_OUTPUT_BYTES 就截斷加註記。
 
 DB role + sqlparse + statement_timeout = 三層防護。本檔只負責第二層。
@@ -12,11 +14,9 @@ DB role + sqlparse + statement_timeout = 三層防護。本檔只負責第二層
 
 from __future__ import annotations
 
-import re
-
 import sqlparse
 from sqlparse.sql import Statement
-from sqlparse.tokens import DML, Keyword
+from sqlparse.tokens import DML, Keyword, Number
 
 # ---- 常數 -----------------------------------------------------------------
 
@@ -112,40 +112,55 @@ def _first_significant_keyword(stmt: Statement) -> str | None:
 
 # ---- LIMIT 注入 / 截斷 ----------------------------------------------------
 
-# 抓最外層 LIMIT 數字(忽略大小寫)。粗略 regex:LIMIT <整數>,只用來判斷有無與
-# clamp 大小。不處理 LIMIT <expr> 這種非常數情境(罕見,該情境直接放行,反正
-# statement_timeout 兜底)。
-_LIMIT_RE = re.compile(r"\blimit\s+(\d+)\b", re.IGNORECASE)
+
+def _top_level_limit(sql: str) -> int | None:
+    """回傳 statement「頂層」LIMIT 的整數值;沒有或非整數則 None。
+
+    子查詢 / 衍生表 / CTE 內的 LIMIT 會被 sqlparse 包進 Parenthesis / Function token,
+    只走 statement 最外層 token list 自然跳過它們 —— 這正是舊 regex 版(抓「第一個」
+    LIMIT)被內層 LIMIT 繞過的根因修正。只認 `LIMIT <整數常數>`;`LIMIT ALL` / `LIMIT $1`
+    視同「無可用上界」回 None(交給 wrap 補 default)。
+    """
+    statements = [s for s in sqlparse.parse(sql) if str(s).strip()]
+    if not statements:
+        return None
+    tokens = [t for t in statements[0].tokens if not t.is_whitespace]
+    for i, token in enumerate(tokens):
+        if token.ttype is Keyword and token.normalized.upper() == "LIMIT":
+            for nxt in tokens[i + 1:]:
+                if nxt.ttype in Number:
+                    return int(nxt.value)
+                return None  # LIMIT 後第一個有意義 token 非整數常數 → 無上界
+    return None
+
+
+def _strip_trailing_semicolons(sql: str) -> str:
+    """去掉結尾分號 + 空白 —— 包成子查詢時 `(... ;)` 會 parse error。"""
+    stripped = sql.strip()
+    while stripped.endswith(";"):
+        stripped = stripped[:-1].rstrip()
+    return stripped
 
 
 def clamp_limit(sql: str, default: int = DEFAULT_LIMIT, maximum: int = MAX_LIMIT) -> str:
-    """確保 SQL 帶合理 LIMIT。回傳修改後 SQL。
+    """確保 SQL 帶硬性外層 LIMIT 上界,回傳改寫後 SQL。
 
-    - 沒 LIMIT → 在最末(分號前)加 `LIMIT default`。
-    - LIMIT N where N > maximum → 改成 LIMIT maximum。
-    - LIMIT N where N <= maximum → 不動。
+    做法:用 sqlparse 取頂層 LIMIT 算出上界 bound,再把整段查詢包進子查詢加外層 LIMIT:
+    `SELECT * FROM (<user_sql>) AS _capped LIMIT bound`。
+      - 無頂層 LIMIT → bound = default。
+      - 有頂層 LIMIT N → bound = min(N, maximum)。
 
-    僅處理 ASCII 整數 LIMIT,不處理 `LIMIT $1` / `LIMIT ALL` 等;這類情境
-    視同「沒寫 LIMIT」邏輯不會誤觸發,statement_timeout 兜底。
+    外層 LIMIT 一律生效,即使查詢「只在子查詢」寫 LIMIT(舊 regex 版會被繞過)也被
+    bound 收斂。內層 ORDER BY / OFFSET / 既有 LIMIT 都保留在子查詢內;子查詢重複欄名
+    安全(Postgres 只在「引用」歧義欄位時報錯,derived table 的 SELECT * 重導出不報錯)。
+
+    注意:無 LIMIT 的 ORDER BY 被包進子查詢後,單層 derived table 實務上保排序,但 SQL
+    標準不保證最外層順序;若需嚴格全域排序,呼叫端應自帶頂層 ORDER BY。
     """
-    match = _LIMIT_RE.search(sql)
-    if match is None:
-        return _append_limit(sql, default)
-
-    value = int(match.group(1))
-    if value <= maximum:
-        return sql
-    # 用 regex span 精準替換掉那個數字,保留 SQL 其他形態
-    start, end = match.span(1)
-    return sql[:start] + str(maximum) + sql[end:]
-
-
-def _append_limit(sql: str, limit: int) -> str:
-    """在 SQL 末尾(分號前)加 LIMIT N。"""
-    stripped = sql.rstrip()
-    if stripped.endswith(";"):
-        return f"{stripped[:-1]} LIMIT {limit};"
-    return f"{stripped} LIMIT {limit}"
+    top = _top_level_limit(sql)
+    bound = default if top is None else min(top, maximum)
+    inner = _strip_trailing_semicolons(sql)
+    return f"SELECT * FROM (\n{inner}\n) AS _capped\nLIMIT {bound}"
 
 
 # ---- Output truncation ----------------------------------------------------

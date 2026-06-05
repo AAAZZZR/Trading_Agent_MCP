@@ -9,7 +9,7 @@ Claude.ai / Desktop / 其他 MCP client
        │ Streamable HTTP(or stdio)
        │ Authorization: Bearer <MCP_BEARER_TOKEN>
        ▼
-trading_agent_mcp  ◄─── 15 個 tool,一對一對應 API endpoint
+trading_agent_mcp  ◄─── 42 個 tool,對應 API endpoint(+ 1 個自由 SQL tool)
        │ httpx + Authorization: Bearer <MCP_API_AUTH_TOKEN>
        ▼
 Trading_Agent API(FastAPI)
@@ -30,17 +30,18 @@ PostgreSQL(via SQLAlchemy 2.0 async)
 
 本 server 不公告 OAuth metadata(verifier 不掛 `.well-known` route),所以 client 拿到 401 會直接顯示認證失敗,不會誤入 OAuth 流程。
 
-**Tier gating**:`execute_readonly_sql`(重量級自由 SQL)用 `require_scopes("tier:pro")` 在 FastMCP 元件層 gating —— free tier(`tier:free`)在 `tools/list` 看不到此 tool,直接呼叫也被擋;其餘 structured tool free / pro 都能用。
+**Tier gating**:`execute_readonly_sql` 與 `describe_table`(重量級自由 SQL / schema 自省)用 `require_scopes("tier:pro")` 在 FastMCP 元件層 gating —— free tier(`tier:free`)在 `tools/list` 看不到這兩個 tool,直接呼叫也被擋;其餘 structured tool free / pro 都能用。
 
 **快取取捨**:per-user 模式有一個 ~20s 的 in-process 快取,但「只」存 validity / tier,做為 authorize 短暫失敗(網路抖動 / 5xx)時的 fallback,不取代每次 POST —— 計量與配額永遠以後端每次呼叫為準。
 
-## Tools(16 個)
+## Tools(42 個)
 
-15 個 per-domain tool 對齊 Trading_Agent 的 `lib/api.ts`,再加 1 個自由 SQL tool:
+41 個 per-domain tool(對齊 Trading_Agent 的 `lib/api.ts` 與聚合 endpoint),再加 1 個自由 SQL tool:
 
 | Tool | 對應 API endpoint |
 |---|---|
 | `list_companies` | `GET /api/companies` |
+| `search_companies` | `GET /api/companies/search?q=...` |
 | `get_company` | `GET /api/companies/{ticker}` |
 | `list_filings` | `GET /api/filings?ticker=...` |
 | `get_filing` | `GET /api/filings/{accession}` |
@@ -51,19 +52,46 @@ PostgreSQL(via SQLAlchemy 2.0 async)
 | `get_cash_flow_statements` | `GET /api/financials/cashflow?ticker=...` |
 | `get_latest_period` | `GET /api/financials/latest?ticker=...` |
 | `list_insider_trades` | `GET /api/insider?ticker=...` |
-| `list_daily_prices` | `GET /api/prices?ticker=...` |
-| `get_latest_price` | `GET /api/prices/latest?ticker=...` |
+| `list_daily_prices` | `GET /api/prices/daily?ticker=...`(第一手日 K,~5 年) |
+| `get_latest_price` | `GET /api/prices/daily/latest?ticker=...` |
+| `list_hourly_prices` | `GET /api/prices/hourly?ticker=...` |
 | `list_institutional_holders` | `GET /api/holdings/institutions?ticker=...` |
 | `get_holders_breakdown` | `GET /api/holdings/major?ticker=...` |
+| `list_13f_holders` | `GET /api/13f/holders?ticker=...` |
+| `list_13f_portfolio` | `GET /api/13f/portfolio?cik=...` |
+| `list_13f_top_buyers` | `GET /api/13f/top-buyers?ticker=...` |
+| `list_13f_top_sellers` | `GET /api/13f/top-sellers?ticker=...` |
+| `search_institutions` | `GET /api/13f/institutions/search?q=...` |
+| `get_institution` | `GET /api/13f/institutions/{cik}` |
+| `list_dividends` | `GET /api/dividends/{ticker}` |
+| `list_splits` | `GET /api/splits/{ticker}` |
+| `list_earnings` | `GET /api/earnings/{ticker}` |
+| `get_earnings_calendar` | `GET /api/earnings/calendar` |
+| `get_etf_profile` | `GET /api/etf/{ticker}/profile` |
+| `list_etf_holdings` | `GET /api/etf/{ticker}/holdings` |
+| `list_etf_sectors` | `GET /api/etf/{ticker}/sectors` |
+| `list_etfs_holding_ticker` | `GET /api/etf/holders/{ticker}` |
+| `list_macro_series` | `GET /api/macro/series` |
+| `get_macro_series` | `GET /api/macro/series/{series_id}` |
+| `get_overview` | `GET /api/overview/{ticker}` |
+| `get_options_chain` | `GET /api/options/chain?underlying=...` |
+| `get_option_expirations` | `GET /api/options/expirations?underlying=...` |
+| `get_option_contract_history` | `GET /api/options/contract/{contract_id}` |
+| `get_analysis` | `GET /api/analysis/{ticker}`(四面向紅綠燈,帶解讀) |
+| `get_objective_report` | `GET /api/report/{ticker}`(客觀數據包,純數據) |
+| `screen_insider_buys` | `GET /api/screener/insider-buys` |
 | `execute_readonly_sql` | 直連 Postgres(`investor_db_readonly` role) |
+| `describe_table` | 直連 Postgres(`information_schema` 自省) |
 
 ### `execute_readonly_sql` —— 自由 SELECT
 
-給 power user / AI agent 跑任意 SELECT(含 WITH ... SELECT)。Schema 14 表:
+給 power user / AI agent 跑任意 SELECT(含 WITH ... SELECT)。可查的表:
 `companies`, `institutions`, `institution_filings`, `filings`, `filing_sections`,
 `income_statements`, `balance_sheets`, `cash_flow_statements`, `insider_trades`,
-`institutional_holdings`, `prices_hourly`, `financials_quarantine`, `ingest_runs`,
-`alembic_version`。
+`institutional_holdings`, `prices_daily`, `prices_hourly`, `company_overview`,
+`options_eod`, `financials_quarantine`, `ingest_runs`, `alembic_version`,
+`dividends`, `splits`, `earnings_calendar`, `etf_profile`, `etf_holdings`,
+`macro_series`, `macro_series_meta`。實際清單以 `describe_table()`(不帶參數)為準。
 
 **安全保證(三層防護)**:
 
@@ -75,7 +103,7 @@ PostgreSQL(via SQLAlchemy 2.0 async)
    DB 也擋下任何寫操作。
 3. **Statement timeout**:每段查詢 5 秒上限,複雜 query 自動 abort。
 
-**LIMIT 自動處理**:沒寫 → 加 `LIMIT 1000`;寫了 > 10000 → clamp 成 10000。
+**LIMIT 自動處理**:把查詢包成 `SELECT * FROM (<你的 SQL>) _ LIMIT n` 加硬性外層上界 —— 沒寫頂層 LIMIT 補 `LIMIT 1000`,有頂層 LIMIT N 用 `min(N, 10000)`;子查詢內寫 LIMIT 也無法繞過。
 **Output 截斷**:序列化超過 100KB 截斷並附註記。
 
 #### DB role 設置(用戶手動跑一次)
@@ -96,7 +124,7 @@ MCP_READONLY_DB_DSN=postgresql://investor_db_readonly:<密碼>@<host>:<port>/<db
 
 注意是 `postgresql://`(asyncpg 用,不要 `+asyncpg` 後綴)。
 
-留空 = 不啟用 SQL tool;其他 15 個 tool 不受影響(tool 被呼叫時會回 friendly error)。
+留空 = 不啟用 SQL tool(`execute_readonly_sql` / `describe_table`);其餘 per-domain tool 不受影響(這兩個 tool 被呼叫時會回 friendly error)。
 
 ## 本機開發
 

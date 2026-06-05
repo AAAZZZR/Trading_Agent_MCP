@@ -298,40 +298,47 @@ async def list_daily_prices(
     ticker: str,
     start: str | None = None,
     end: str | None = None,
-    limit: int = 1000,
+    limit: int = 2000,
 ) -> list[dict[str, Any]]:
-    """取得每日 OHLC + 成交量(價格 USD),依日期升冪(最舊在前)。
+    """取得第一手每日 OHLC + 成交量(價格 USD),依日期升冪(最舊在前)。最多約 5 年歷史。
+
+    這是畫長線圖 / 回測 / 算報酬率該用的日 K(直存第一手日線)。涵蓋最多約 5 年,
+    依上市時間而異(新上市股較短)。**不含還原價(adj_close)** —— 跨除權息 / 分割
+    要自行用 `list_dividends` / `list_splits` 調整。要 intraday(小時)粒度改用
+    `list_hourly_prices`。完整歷史 pull 可能不小,只要近期請帶 start/end 或縮小 limit。
 
     Args:
         ticker: 美股代號(自動轉大寫)。
-        start: 起始日期(YYYY-MM-DD),包含。
-        end: 結束日期(YYYY-MM-DD),包含。
-        limit: 最多幾筆(1-5000,預設 1000)。
+        start: 起始日期(YYYY-MM-DD),包含。省略 = 不設下界。
+        end: 結束日期(YYYY-MM-DD),包含。省略 = 不設上界。
+        limit: 最多幾筆(1-10000,預設 2000)。
 
     Returns:
-        list[dict],每筆含 date(YYYY-MM-DD)、open、high、low、close(USD)、volume。
-        只要最新一筆用 `get_latest_price`;要 intraday 粒度用 `list_hourly_prices`。
+        list[dict],每筆含 ticker、date(YYYY-MM-DD)、open、high、low、close(USD)、
+        volume。**不含 adj_close**。只要最新一筆用 `get_latest_price`。查無資料回空 list。
     """
     params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
     if start is not None:
         params["start"] = start
     if end is not None:
         params["end"] = end
-    return await api.get("/api/prices", params=params)
+    return await api.get("/api/prices/daily", params=params)
 
 
 @mcp.tool
 async def get_latest_price(ticker: str) -> dict[str, Any]:
-    """取得最新一個交易日的 OHLC + 成交量(價格 USD)。
+    """取得最新一個交易日的第一手日 K(OHLC + 成交量,價格 USD)。
+
+    跟 `list_daily_prices` 同一個第一手日線來源(取最後一筆)。
 
     Args:
         ticker: 美股代號(自動轉大寫)。
 
     Returns:
-        dict,含 date(YYYY-MM-DD)、open、high、low、close(USD)、volume。
-        查無價格 → tool error(後端 404)。
+        dict,含 ticker、date(YYYY-MM-DD)、open、high、low、close(USD)、volume。
+        **不含 adj_close**。查無價格 → tool error(後端 404)。
     """
-    return await api.get("/api/prices/latest", params={"ticker": ticker.upper()})
+    return await api.get("/api/prices/daily/latest", params={"ticker": ticker.upper()})
 
 
 @mcp.tool
@@ -344,7 +351,7 @@ async def list_hourly_prices(
     """取得每小時 OHLC + 成交量(dt 升冪,timestamptz)。
 
     粒度比 `list_daily_prices` 細,適合做 intraday 分析或 backtest 對齊。
-    PROD 2026-05 現況:資料 worker 還沒部署,可能回空 list。
+    歷史深度有限(僅近約 10 天 resample),要長區間請改用 `list_daily_prices`。
 
     Args:
         ticker: 美股代號。
@@ -800,6 +807,269 @@ async def screen_insider_buys(
 
 
 # ============================================================
+# Analysis(四面向紅綠燈彙整 —— 帶解讀,給 agent 先看結論)
+# ============================================================
+
+
+@mcp.tool
+async def get_analysis(ticker: str) -> dict[str, Any]:
+    """取得四面向紅綠燈分析(基本面/籌碼面/技術面/期權面結論 + 綜合總評)。
+
+    「先看結論」入口:後端把原始數據整合成每面向一句中文結論 + verdict + 綜合總評。
+    跟 `get_objective_report`(純數據無解讀)互補:要結論用本工具,要原料用 report。
+
+    **注意 overall_summary 只列 bullish 與 bearish 面向,verdict="neutral" 的面向不會
+    出現在總評**;某些底層偏空訊號(例如內部人大量賣出)會被規則降級為 neutral。要對
+    使用者誠實呈現風險,不應只讀 overall_verdict/overall_summary,務必逐一檢視每個 lens
+    的 signals(尤其 neutral 面向),必要時用 list_insider_trades / list_13f_holders 取
+    原始數字自行覆寫。各面向 as_of 可能落差數週至一季(技術面最新、基本面上一季、13F 約
+    90 天延遲),overall 是跨時間軸結論的平均。signals[].value 是含措辭的 display string
+    (如 "+17%"),非機器可讀數值 —— 要門檻判斷 / 跨標的比較請改用對應細項 tool。
+
+    永遠回 200(資料缺的面向 verdict="na" 並從綜合分母剔除,不像 get_company 回 404)。
+    **overall_verdict 永不 "na"**(全缺退為 "neutral",lenses_scored=0)。
+
+    Args:
+        ticker: 美股代號(大小寫不拘,自動轉大寫)。
+
+    Returns:
+        dict:ticker、overall_verdict("bullish"|"neutral"|"bearish")、overall_summary、
+        lenses_scored(0-4,na 不計)、lenses[](固定 4 個,序 fundamental→chips→technical
+        →options)。每 lens 含 key、name、verdict、summary、as_of(ISO 或 null)、
+        signals[]{label, value(display string,無資料 "—"), verdict}。
+    """
+    return await api.get(f"/api/analysis/{ticker.upper()}")
+
+
+# ============================================================
+# Objective report(客觀數據包 —— 純數據,給 agent 自行解讀)
+# ============================================================
+
+
+@mcp.tool
+async def get_objective_report(
+    ticker: str,
+    sections: str | None = None,
+    statements_limit: int = 8,
+    insider_limit: int = 20,
+    holders_limit: int = 10,
+    filings_limit: int = 5,
+    recent_price_bars: int = 30,
+) -> dict[str, Any]:
+    """一次取得單一公司「客觀數據包」:估值 + 近 N 期三表 + 內部人 + 13F + 價格摘要 +
+    期權摘要 + 近期 filing 章節標題清單。**純數據,無任何解讀 / 評分**,給你(agent)自行分析。
+
+    跟 `get_analysis`(四面向紅綠燈 + 中文結論,**有解讀**)互補:要結論用 get_analysis;
+    要「給我原料我自己判斷」用本工具,免逐一打 8 個 endpoint。
+
+    payload 已為 LLM context 控制:不含 filing 內文(只給章節標題 + section_count,要內文
+    再用 `get_filing_section`);13F / 期權只給彙總 + top-N;價格只給摘要 + 最近數十根日 K。
+    對 token 敏感時建議用 sections= 只挑需要的塊,別無腦全取。
+
+    Args:
+        ticker: 美股代號(自動轉大寫)。
+        sections: 逗號分隔只取部分塊以省 token,可選:company, overview, financials,
+            insider, institutional_13f, price_summary, options_summary, filings;省略 = 全取。
+        statements_limit: 三表各取近 N 期(1-20,預設 8)。
+        insider_limit: 內部人交易筆數(1-100,預設 20)。
+        holders_limit: 13F top holders 筆數(1-50,預設 10)。
+        filings_limit: 近 N 份 filing 列章節目錄(1-20,預設 5)。
+        recent_price_bars: 回最近 N 根日 K(1-120,預設 30)。
+
+    Returns:
+        dict,頂層含 ticker、generated_at、company,與八個 {source, as_of, ...} 信封塊:
+        source 標第一手來源(中性表名)、as_of 標資料最新日期(無資料 → as_of=null、空 list)。
+        price_summary / options_summary 的彙總值都附算式輸入(latest_close、week_52_high/low、
+        put_volume/call_volume)供你自行驗算;options contract_count 等於各 expiration 之和。
+        無此 ticker 不報錯,而是各塊空(company=null)。
+    """
+    params: dict[str, Any] = {
+        "statements_limit": statements_limit,
+        "insider_limit": insider_limit,
+        "holders_limit": holders_limit,
+        "filings_limit": filings_limit,
+        "recent_price_bars": recent_price_bars,
+    }
+    if sections is not None:
+        params["sections"] = sections
+    return await api.get(f"/api/report/{ticker.upper()}", params=params)
+
+
+# ============================================================
+# Overview(估值快照 —— company_overview)
+# ============================================================
+
+
+@mcp.tool
+async def get_overview(ticker: str) -> dict[str, Any]:
+    """取得公司估值快照的原始數據:市值 / 本益比家族 / Beta / 52 週高低 / 均線 / 分析師目標價。
+
+    純數據快照(貴賤、技術強弱由你判讀)。資料源 Alpha Vantage OVERVIEW(每日刷新)。要逐期
+    財報數字用 get_income_statements 等;要四面向結論用 get_analysis。
+
+    Args:
+        ticker: 美股代號(自動轉大寫)。不知道精確 ticker 先用 search_companies。
+
+    Returns:
+        dict。金額(USD 整數,nullable):market_cap, shares_outstanding, ebitda, revenue_ttm,
+        gross_profit_ttm。估值比率(float):pe_ratio, forward_pe, peg_ratio, price_to_book,
+        price_to_sales_ttm, ev_to_ebitda, ev_to_revenue。每股:eps, diluted_eps_ttm, book_value。
+        配息:dividend_per_share, dividend_yield(**0-1 小數**,非百分比)。獲利能力(皆 **0-1
+        小數**):profit_margin, operating_margin_ttm, return_on_assets_ttm, return_on_equity_ttm。
+        風險/技術:beta, week_52_high, week_52_low, ma_50, ma_200。analyst_target_price。
+        latest_quarter(財報期末 YYYY-MM-DD)、updated_at(本表刷新時間 ISO)。多數 nullable。
+        尚未被 overview ETL 覆蓋 → tool error(後端 404)。
+    """
+    return await api.get(f"/api/overview/{ticker.upper()}")
+
+
+# ============================================================
+# Options(期權 EOD —— options_eod)
+# ============================================================
+
+
+@mcp.tool
+async def get_options_chain(
+    underlying: str,
+    as_of: str | None = None,
+    expiration: str | None = None,
+    option_type: Literal["call", "put"] | None = None,
+    limit: int = 250,
+) -> list[dict[str, Any]]:
+    """取得某標的某交易日的期權鏈(EOD 報價 + IV + greeks),依 (到期日, 履約價, call/put) 排序。
+
+    一列 = 一個 OCC 合約在該交易日的 EOD snapshot。**全鏈可達上千合約,預設 limit=250 防爆
+    context**;建議先用 get_option_expirations 拿到期日,再帶 expiration 過濾。underlying 是
+    AV symbol,不保證對得上 companies.ticker(指數選擇權、BRK.B/BRK-B 命名差異)。查無 →
+    回空 list;若是符號寫法問題,試 dot/dash 兩種(BRK.B vs BRK-B)或先 search_companies。
+
+    Args:
+        underlying: 標的代號(AV symbol,自動轉大寫)。
+        as_of: EOD 交易日(YYYY-MM-DD);省略 = 該標的最新交易日。
+        expiration: 只取此到期日(YYYY-MM-DD);省略 = 全到期。
+        option_type: "call" 或 "put";省略 = 兩者皆回。
+        limit: 合約數上限(1-5000,預設 250)。
+
+    Returns:
+        list[dict],每筆含 contract_id(OCC)、date、underlying、expiration、strike、option_type、
+        last、mark、bid、bid_size、ask、ask_size、volume、open_interest、implied_volatility、
+        delta、gamma、theta、vega、rho。**數值欄(strike/報價/IV/各 greek)以 JSON 字串回傳
+        (如 "200.0000"、"-0.019830"),做數學前先轉 float;greeks 可為負**;bid_size/ask_size/
+        volume/open_interest 為整數。null = 報價/greek 缺失,勿當 0 納入計算。無資料回空 list。
+    """
+    params: dict[str, Any] = {"underlying": underlying.upper(), "limit": limit}
+    if as_of is not None:
+        params["as_of"] = as_of
+    if expiration is not None:
+        params["expiration"] = expiration
+    if option_type is not None:
+        params["option_type"] = option_type
+    return await api.get("/api/options/chain", params=params)
+
+
+@mcp.tool
+async def get_option_expirations(
+    underlying: str, as_of: str | None = None
+) -> list[dict[str, Any]]:
+    """列出某標的某交易日可選的到期日 + 各到期合約數,ascending expiration。
+
+    給挑 expiration 用 —— 先拿到期日,再帶去 get_options_chain 過濾,避免一次拉整鏈。
+
+    Args:
+        underlying: 標的代號(AV symbol,自動轉大寫)。
+        as_of: EOD 交易日(YYYY-MM-DD);省略 = 最新交易日。
+
+    Returns:
+        list[dict],每筆含 expiration(YYYY-MM-DD)、contract_count。無資料回空 list。
+    """
+    params: dict[str, Any] = {"underlying": underlying.upper()}
+    if as_of is not None:
+        params["as_of"] = as_of
+    return await api.get("/api/options/expirations", params=params)
+
+
+@mcp.tool
+async def get_option_contract_history(
+    contract_id: str,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 2000,
+) -> list[dict[str, Any]]:
+    """取得單一 OCC 合約的逐日 EOD 時間序列(報價 / IV / greeks 隨時間),ascending date。
+
+    Args:
+        contract_id: OCC 合約代號,區分大小寫原樣(例 "AAPL260605C00200000")。可從
+            get_options_chain 取得。
+        start: 起始日(YYYY-MM-DD,inclusive);省略 = 不設下界。
+        end: 結束日(YYYY-MM-DD,inclusive);省略 = 不設上界。
+        limit: 天數上限(1-10000,預設 2000)。
+
+    Returns:
+        list[dict],欄位同 get_options_chain(數值欄為 JSON 字串)。無資料回空 list。
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if start is not None:
+        params["start"] = start
+    if end is not None:
+        params["end"] = end
+    return await api.get(f"/api/options/contract/{contract_id}", params=params)
+
+
+# ============================================================
+# 13F filer lookup(機構名 → CIK)
+# ============================================================
+
+
+@mcp.tool
+async def search_institutions(q: str, limit: int = 20) -> list[dict[str, Any]]:
+    """以機構名稱或 CIK 關鍵字模糊搜尋 13F filer(typeahead),適合「只知道機構名字」時。
+
+    拿到 cik 後帶去 list_13f_portfolio 看該機構整個持倉。
+
+    Args:
+        q: 機構名稱或 CIK 關鍵字(至少 1 字元,例 "berkshire"、"1067983")。
+        limit: 最多回傳幾筆(1-50,預設 20)。
+
+    Returns:
+        list[dict],每筆含 cik、name、first_seen(YYYY-MM-DD 或 null)、latest_quarter
+        (該 filer 最新持倉季 YYYY-MM-DD 或 null)。無命中回空 list。
+    """
+    return await api.get("/api/13f/institutions/search", params={"q": q, "limit": limit})
+
+
+@mcp.tool
+async def get_institution(cik: str) -> dict[str, Any]:
+    """以精確 CIK 取得單一 13F filer 基本資料(名稱 / first_seen / 最新持倉季)。
+
+    Args:
+        cik: 機構 CIK(10 碼 zero-pad 字串,例 "0001067983")。
+
+    Returns:
+        dict,含 cik、name、first_seen、latest_quarter。查無 → tool error(後端 404)。
+    """
+    return await api.get(f"/api/13f/institutions/{cik}")
+
+
+# ============================================================
+# ETF sector weights
+# ============================================================
+
+
+@mcp.tool
+async def list_etf_sectors(ticker: str) -> list[dict[str, Any]]:
+    """取得某 ETF 的 GICS sector 權重,依權重由大到小。給判讀 ETF 的類股配置。
+
+    Args:
+        ticker: ETF 代號(自動轉大寫,例 SPY)。
+
+    Returns:
+        list[dict],每筆含 etf_ticker、sector(GICS 類股名)、weight(**0-1 小數,以 JSON
+        字串回傳**,如 "0.37600000",占 ETF 淨值比例)。sector 約 11 個,不分頁。查無回空 list。
+    """
+    return await api.get(f"/api/etf/{ticker.upper()}/sectors")
+
+
+# ============================================================
 # Free-form readonly SQL
 # ============================================================
 
@@ -830,9 +1100,10 @@ async def execute_readonly_sql(query: str) -> str:
 
     可查的 table:companies, institutions, institution_filings, filings, filing_sections,
     income_statements, balance_sheets, cash_flow_statements, insider_trades,
-    institutional_holdings, prices_hourly, financials_quarantine, ingest_runs, alembic_version,
-    dividends, splits, earnings_calendar, etf_profile, etf_holdings, macro_series,
-    macro_series_meta。實際清單以 describe_table()(不帶參數)為準。
+    institutional_holdings, prices_daily, prices_hourly, company_overview, options_eod,
+    financials_quarantine, ingest_runs, alembic_version, dividends, splits,
+    earnings_calendar, etf_profile, etf_holdings, macro_series, macro_series_meta。
+    實際清單以 describe_table()(不帶參數)為準。
 
     安全保證(三層):
       1. SQL parsing:只允許單一 SELECT / WITH ... SELECT,拒絕 INSERT/UPDATE/DELETE/DROP 等
@@ -840,10 +1111,10 @@ async def execute_readonly_sql(query: str) -> str:
       2. DB role:連線使用 `investor_db_readonly` role(僅 SELECT 權限)。
       3. Statement timeout:每段查詢 5 秒上限,複雜 query 自動 abort。
 
-    LIMIT 自動處理:
-      - 沒寫 → 自動加 LIMIT 1000。
-      - 寫了 > 10000 → clamp 成 10000。
-      - 寫了 <= 10000 → 不動。
+    LIMIT 自動處理(把你的查詢包成 `SELECT * FROM (<你的 SQL>) _ LIMIT n` 加硬性外層上界):
+      - 沒寫頂層 LIMIT → 外層補 LIMIT 1000。
+      - 頂層 LIMIT N → 外層用 min(N, 10000)。
+      - 子查詢內寫 LIMIT 也無法繞過(外層上界一定生效)。
 
     Output 超過 100KB 會截斷並附註記(改窄 WHERE / 縮小 LIMIT 再查)。
 

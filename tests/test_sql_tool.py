@@ -1,10 +1,10 @@
 """`execute_readonly_sql` tool 的整合測試 —— mock asyncpg pool,不真連 DB。
 
 涵蓋:
-  - 16 tool 註冊性(取代 15 個的測試)
+  - execute_readonly_sql / describe_table 註冊性
   - SELECT 成功路徑(回 JSON,row_count 對)
   - validation 拒絕(DELETE / multi-statement / pg_sleep)→ 回 friendly error
-  - LIMIT 自動加 / clamp 真的傳到 DB
+  - LIMIT 自動加 / clamp(外層硬性上界)真的傳到 DB
   - DSN 沒設 → 回 ReadonlyDBNotConfigured 的 friendly error
 """
 
@@ -122,9 +122,10 @@ async def test_oversized_limit_clamped(patched_pool) -> None:
     with patch.object(tools, "get_pool", AsyncMock(return_value=pool)):
         await tools.execute_readonly_sql(query="SELECT * FROM companies LIMIT 999999")
 
+    # 改寫成「外層硬性上界」後:原始 LIMIT 999999 保留在子查詢內,但外層補 LIMIT 10000
+    # 收斂(實際回不到 999999 列),這正是內層 LIMIT 不可繞過的保證。
     sent_query = conn.fetch.call_args.args[0]
-    assert "LIMIT 10000" in sent_query
-    assert "999999" not in sent_query
+    assert sent_query.rstrip().endswith("LIMIT 10000")
 
 
 # ---- 拒絕路徑(validation 擋下,DB 不被呼叫) -----------------------------
