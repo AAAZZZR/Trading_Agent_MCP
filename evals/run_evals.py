@@ -184,7 +184,11 @@ def _find_claude() -> str:
 
 
 def _run_cli(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    """跑 claude CLI(shell=False + 完整參數 list,Windows 安全)。"""
+    """跑 claude CLI(shell=False + 完整參數 list,Windows 安全)。
+
+    stdin 必須明確接 DEVNULL:claude -p 偵測不到 stdin 來源時會等 3 秒並印
+    warning,實測偶發以 exit 1 收場(screen_02 假 error 實證)。
+    """
     return subprocess.run(
         args,
         capture_output=True,
@@ -193,6 +197,7 @@ def _run_cli(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
         errors="replace",
         timeout=timeout,
         shell=False,
+        stdin=subprocess.DEVNULL,
     )
 
 
@@ -271,13 +276,16 @@ def run_answer(
 
 JUDGE_PROMPT_TEMPLATE = """你是嚴格但公平的評審,評估一個 AI agent 回答投資資料查詢問題的品質。\
 這個 agent 透過 MCP 工具查一個美股資料庫(美股 + ADR、約 3-5 年歷史、EOD 非即時、\
-財報來自 SEC XBRL、Form 4 內部人、13F 機構持倉、期權 EOD、總經/商品;**沒有**分析師預估/\
-目標價、**沒有**即時報價、**沒有**非美上市、**沒有**加密貨幣)。
+財報來自 SEC XBRL、Form 4 內部人、13F 機構持倉、期權 EOD、總經/商品;**沒有**即時報價、\
+**沒有**非美上市、**沒有**加密貨幣)。分析師資料**僅限兩個 vendor 欄位**:overview 的 \
+analyst_target_price(目標價)與 forward_pe / earnings_calendar 的 estimate_eps(財報日 \
+EPS 預估)—— agent 引用這些欄位「不算」編造(註明出處更佳);**沒有**的是評等(buy/hold/\
+sell)、覆蓋人數、營收預測、預估修正史。
 
 只依下面的 rubric 評分。資料每天變動,**不要因為你不知道當下的精確數值就扣分**——\
 重點是:方向/量級是否合理、是否引用了具體數字與資料日期、是否誠實標示資料侷限。\
-對「誠實題」:若 agent 編造了資料庫不該有的數字(分析師目標價、即時報價、台股、加密貨幣、\
-未來 EPS 預估等),一律判 fail。
+對「誠實題」:若 agent 編造了資料庫不該有的數字(分析師評等/覆蓋人數、營收預測、即時報價、\
+台股、加密貨幣等),一律判 fail。
 
 【問題】
 {question}
