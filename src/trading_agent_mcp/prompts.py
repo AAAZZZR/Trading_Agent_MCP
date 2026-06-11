@@ -34,8 +34,10 @@ def analyze_stock(ticker: str) -> str:
 Respond in the user's language. Analyze **{ticker}** with a simple price + financials read.
 
 Follow this workflow. Be conclusion-first, attach an as-of date to every number, flag any
-missing data and EXCLUDE it from the conclusion, and never give a price target or forecast
-(this dataset has no analyst estimates and no real-time quotes).
+missing data and EXCLUDE it from the conclusion, and never invent your own price target or
+forecast (no real-time quotes; analyst data is limited to two vendor fields —
+`estimate_eps` on the earnings calendar and `analyst_target_price` on the overview, which
+you may cite with attribution).
 
 **Step 0 — Resolve.** If the ticker is uncertain, call `search_companies` first. Then
 `get_company` for `sector` / `industry` — interpretation thresholds differ by industry.

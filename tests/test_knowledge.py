@@ -67,7 +67,7 @@ async def test_dictionary_content_anchors() -> None:
 async def test_playbook_resource_content_anchors() -> None:
     """analysis-playbook resource(prompts 文件版)含 step 化方法論與誠實規則。"""
     text = await _read_resource_text("data://analysis-playbook")
-    for anchor in ("Step 0", "Step 5", "TTM", "no analyst estimates"):
+    for anchor in ("Step 0", "Step 5", "TTM", "analyst_target_price"):
         assert anchor in text, f"analysis-playbook missing anchor: {anchor!r}"
     # cluster buying:句首大寫 / 內文小寫皆可,語意錨點不該因大小寫脆弱。
     assert "cluster buying" in text.lower(), "analysis-playbook missing 'cluster buying'"
@@ -78,7 +78,7 @@ async def test_analyze_stock_prompt_content() -> None:
     text = await _render_prompt_text("analyze_stock", {"ticker": "AAPL"})
     assert text.splitlines()[0].startswith("Respond in the user's language")
     assert "AAPL" in text
-    for anchor in ("Step 0", "list_daily_prices", "TTM", "no analyst estimates"):
+    for anchor in ("Step 0", "list_daily_prices", "TTM", "analyst_target_price"):
         assert anchor in text, f"analyze_stock missing anchor: {anchor!r}"
 
 

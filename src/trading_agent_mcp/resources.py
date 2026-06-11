@@ -32,10 +32,13 @@ units they are in, and where they will trip you up.
 - **Coverage:** US equities + ADRs only. No non-US local listings, no crypto, no indices
   as tradable tickers (index *levels* are available as macro series — see Macro).
 - **Not real-time:** everything is EOD-or-slower. No intraday quotes, no streaming.
-- **No analyst estimates / no forecasts:** there are NO consensus EPS estimates, NO price
-  targets you can trust as research (the one `analyst_target_price` field on the overview is
-  a vendor passthrough, often null), NO earnings forecasts. Describe the present; do not invent
-  a forecast or a target price.
+- **Analyst data is limited to two vendor fields** (verified against prod 2026-06-11):
+  `earnings_calendar.estimate_eps` (vendor consensus EPS for an upcoming report date,
+  populated on ~3/4 of calendar entries) and the overview's `analyst_target_price`
+  (populated on ~half of covered tickers, refreshed weekly). You MAY cite these two, always
+  attributed as vendor estimates with their as-of date. There is NO full analyst dataset:
+  no buy/hold/sell ratings, no analyst counts, no revenue forecasts, no estimate-revision
+  history. Never invent your own forecast or price target.
 - **Money is raw USD.** All monetary figures are the actual dollar amount, NOT thousands and
   NOT millions. `revenue = 391035000000` means $391.035B. Share counts are actual shares.
 - **Dates** are `YYYY-MM-DD` ISO strings. Timestamps are ISO 8601 (often UTC, `...Z`).
@@ -228,8 +231,9 @@ Which tools serve this domain: `list_earnings` (single ticker),
 - Fields: `report_date` (scheduled announcement date — a **vendor estimate**, can shift),
   `fiscal_date_ending`, `estimate_eps` (often null), `currency` (often null), `report_time`
   (`pre-market` / `post-market` / null).
-- Use it to flag an imminent earnings date (swing traders avoid the gap). **There are no
-  analyst EPS estimates to rely on** — `estimate_eps` is a sparse vendor passthrough.
+- Use it to flag an imminent earnings date (swing traders avoid the gap). `estimate_eps`
+  IS a usable vendor consensus EPS for the upcoming report (populated on ~3/4 of entries) —
+  cite it with attribution. There are NO ratings, revenue forecasts, or estimate history.
 
 ---
 
@@ -309,8 +313,9 @@ invoke MCP prompts. Respond in the user's language.
 
 - Every number carries an as-of date. Domains have different lag — do not blend silently.
 - Missing data is flagged and **excluded from the conclusion**, never guessed or zero-filled.
-- There are **no analyst estimates and no real-time quotes**: describe the current state, do
-  NOT give a price target or a forecast.
+- **No real-time quotes; analyst data limited to two vendor fields** (`estimate_eps` on the
+  earnings calendar, `analyst_target_price` on the overview — cite with attribution): describe
+  the current state, never invent your own price target or forecast.
 - Prefer "relative to its own history" over absolute thresholds; thresholds vary by sector.
 - For a loss-making company, drop P/E (label "N/A (loss)") and use P/S, EV/EBITDA, growth.
 

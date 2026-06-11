@@ -497,6 +497,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows console 預設 cp950,judge 理由裡的「≈」等字元會讓 print 直接炸掉
+    # (UnicodeEncodeError 中斷整輪)— 強制 utf-8 + replace,輸出永不致命。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     args = parse_args(argv)
     judge_model = args.judge_model or args.model
 

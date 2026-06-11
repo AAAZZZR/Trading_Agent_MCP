@@ -62,7 +62,9 @@ async def get_data_coverage() -> dict[str, Any]:
           which is NOT the same as "zero gaps" — absence of a note is not a guarantee.
 
     Coverage is US equities + ADRs only: no indices (as tradable tickers), no crypto, no
-    non-US listings, EOD-or-slower, no analyst estimates.
+    non-US listings, EOD-or-slower. Analyst data is limited to two vendor fields
+    (earnings_calendar.estimate_eps, overview analyst_target_price) — no ratings or
+    revenue forecasts.
 
     Data cadence: this report refreshed daily; per-domain freshness is in each domain entry.
 
@@ -669,7 +671,7 @@ async def list_earnings(
     給 swing trader 避開 earnings gap、安排進出場(單 ticker 視角)。要掃整個市場
     某區間誰公布財報改用 `get_earnings_calendar`。
 
-    Data cadence: calendar refreshed daily 03:00 UTC; report dates are vendor estimates; NO analyst EPS estimates.
+    Data cadence: calendar refreshed daily 03:00 UTC; report dates are vendor estimates; estimate_eps is a vendor consensus EPS (~3/4 of entries) — cite with attribution; no ratings/revenue forecasts.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -701,7 +703,7 @@ async def get_earnings_calendar(
 
     回答「下週 / 某區間有哪些公司公布財報」。要單一公司的財報日改用 `list_earnings`。
 
-    Data cadence: calendar refreshed daily 03:00 UTC; report dates are vendor estimates; NO analyst EPS estimates.
+    Data cadence: calendar refreshed daily 03:00 UTC; report dates are vendor estimates; estimate_eps is a vendor consensus EPS (~3/4 of entries) — cite with attribution; no ratings/revenue forecasts.
 
     Args:
         start: 區間起始公布日(含,YYYY-MM-DD);省略 = 不設下界。
