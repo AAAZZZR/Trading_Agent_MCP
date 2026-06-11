@@ -203,8 +203,9 @@ Which tools serve this domain: `get_options_chain`, `get_option_expirations`,
   near-month contract with `|delta| ≈ 0.5`. Interpret IV relative to the name's own history.
 - **Low-liquidity caveat:** many ADRs have no options at all (treat the options lens as
   missing, not bearish), and thin contracts (tiny volume/OI) should not be over-read.
-- Pitfall: `underlying` is the AV symbol and may not match `companies.ticker` exactly
-  (BRK.B vs BRK-B). If empty, try the dot/dash variant.
+- Pitfall: the `ticker` argument is the AV symbol and may not match `companies.ticker` exactly
+  (BRK.B vs BRK-B). If empty, try the dot/dash variant. (The data row still carries an
+  `underlying` field — same value, just the response column name.)
 
 ---
 
@@ -267,6 +268,9 @@ Which tools serve this domain: `list_macro_series` (catalog — call first),
 - **Cadence:** economic + commodity series are **monthly**; the index series
   `INDEX_SPX` / `INDEX_NDX` / `INDEX_VIX` are **daily**. Observation fields: `series_id`,
   `date`, `value`.
+- **Ordering:** `get_macro_series` returns **newest-first by default** (`order='desc'`), so
+  `limit=1` gives you the latest reading (e.g. the current VIX). Pass `order='asc'` when you
+  need an oldest-first time series for charting or a moving-average calculation.
 
 ---
 

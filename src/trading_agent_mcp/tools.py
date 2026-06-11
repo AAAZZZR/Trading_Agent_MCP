@@ -834,8 +834,13 @@ async def get_macro_series(
     start: str | None = None,
     end: str | None = None,
     limit: int = 2000,
+    order: str = "desc",
 ) -> list[dict[str, Any]]:
-    """取得某 series 的觀測時間序列,依日期升冪(最舊在前),邊界 inclusive。
+    """Returns newest-first by default; pass order='asc' for chart-style series.
+
+    取得某 series 的觀測時間序列,邊界 inclusive。**MCP 端預設 order='desc'(最新在前)** ——
+    問「最新 VIX / 最近一筆 CPI」時 limit=1 即拿到最新值;要畫時間序列圖 / 算移動平均請改
+    order='asc'(最舊在前)。
 
     series_id 區分大小寫,請用 `list_macro_series` 目錄拿到的原值(例 CPI、
     TREASURY_YIELD_10YEAR、WTI、INDEX_VIX)。注意:**value 的單位不在本回應裡** ——
@@ -848,12 +853,13 @@ async def get_macro_series(
         start: 起始日(含,YYYY-MM-DD);省略 = 不設下界。
         end: 結束日(含,YYYY-MM-DD);省略 = 不設上界。
         limit: 最多回傳幾筆(1-10000,預設 2000)。
+        order: 'desc'(最新在前,預設)或 'asc'(最舊在前,畫圖 / 算 MA 用)。
 
     Returns:
         list[dict],每筆含 series_id、date(YYYY-MM-DD)、value(數值,單位見目錄的
         `unit`)。series_id 不存在或區間無資料回空 list。
     """
-    params: dict[str, Any] = {"limit": limit}
+    params: dict[str, Any] = {"limit": limit, "order": order}
     if start is not None:
         params["start"] = start
     if end is not None:
@@ -1044,7 +1050,7 @@ async def get_overview(ticker: str) -> dict[str, Any]:
 
 @mcp.tool
 async def get_options_chain(
-    underlying: str,
+    ticker: str,
     as_of: str | None = None,
     expiration: str | None = None,
     option_type: Literal["call", "put"] | None = None,
@@ -1053,27 +1059,29 @@ async def get_options_chain(
     """取得某標的某交易日的期權鏈(EOD 報價 + IV + greeks),依 (到期日, 履約價, call/put) 排序。
 
     一列 = 一個 OCC 合約在該交易日的 EOD snapshot。**全鏈可達上千合約,預設 limit=250 防爆
-    context**;建議先用 get_option_expirations 拿到期日,再帶 expiration 過濾。underlying 是
-    AV symbol,不保證對得上 companies.ticker(指數選擇權、BRK.B/BRK-B 命名差異)。查無 →
+    context**;建議先用 get_option_expirations 拿到期日,再帶 expiration 過濾。ticker 用 AV
+    symbol,不保證對得上 companies.ticker(指數選擇權、BRK.B/BRK-B 命名差異)。查無 →
     回空 list;若是符號寫法問題,試 dot/dash 兩種(BRK.B vs BRK-B)或先 search_companies。
 
     Data cadence: EOD chains for the prior trading day, fetched Mon-Fri 04:00 UTC.
 
     Args:
-        underlying: 標的代號(AV symbol,自動轉大寫)。
+        ticker: 標的代號(AV symbol,自動轉大寫)。
         as_of: EOD 交易日(YYYY-MM-DD);省略 = 該標的最新交易日。
         expiration: 只取此到期日(YYYY-MM-DD);省略 = 全到期。
         option_type: "call" 或 "put";省略 = 兩者皆回。
         limit: 合約數上限(1-5000,預設 250)。
 
     Returns:
-        list[dict],每筆含 contract_id(OCC)、date、underlying、expiration、strike、option_type、
-        last、mark、bid、bid_size、ask、ask_size、volume、open_interest、implied_volatility、
-        delta、gamma、theta、vega、rho。**數值欄(strike/報價/IV/各 greek)以 JSON 字串回傳
-        (如 "200.0000"、"-0.019830"),做數學前先轉 float;greeks 可為負**;bid_size/ask_size/
-        volume/open_interest 為整數。null = 報價/greek 缺失,勿當 0 納入計算。無資料回空 list。
+        list[dict],每筆含 contract_id(OCC)、date、underlying(資料欄位,即標的代號)、
+        expiration、strike、option_type、last、mark、bid、bid_size、ask、ask_size、volume、
+        open_interest、implied_volatility、delta、gamma、theta、vega、rho。**數值欄(strike/
+        報價/IV/各 greek)以 JSON 字串回傳(如 "200.0000"、"-0.019830"),做數學前先轉 float;
+        greeks 可為負**;bid_size/ask_size/volume/open_interest 為整數。null = 報價/greek 缺失,
+        勿當 0 納入計算。無資料回空 list。
     """
-    params: dict[str, Any] = {"underlying": underlying.upper(), "limit": limit}
+    # API 端 query 參數名仍是 underlying(沒改 API);這裡只把工具參數統一成 ticker。
+    params: dict[str, Any] = {"underlying": ticker.upper(), "limit": limit}
     if as_of is not None:
         params["as_of"] = as_of
     if expiration is not None:
@@ -1085,7 +1093,7 @@ async def get_options_chain(
 
 @mcp.tool
 async def get_option_expirations(
-    underlying: str, as_of: str | None = None
+    ticker: str, as_of: str | None = None
 ) -> list[dict[str, Any]]:
     """列出某標的某交易日可選的到期日 + 各到期合約數,ascending expiration。
 
@@ -1094,13 +1102,14 @@ async def get_option_expirations(
     Data cadence: EOD chains for the prior trading day, fetched Mon-Fri 04:00 UTC.
 
     Args:
-        underlying: 標的代號(AV symbol,自動轉大寫)。
+        ticker: 標的代號(AV symbol,自動轉大寫)。
         as_of: EOD 交易日(YYYY-MM-DD);省略 = 最新交易日。
 
     Returns:
         list[dict],每筆含 expiration(YYYY-MM-DD)、contract_count。無資料回空 list。
     """
-    params: dict[str, Any] = {"underlying": underlying.upper()}
+    # API 端 query 參數名仍是 underlying(沒改 API);這裡只把工具參數統一成 ticker。
+    params: dict[str, Any] = {"underlying": ticker.upper()}
     if as_of is not None:
         params["as_of"] = as_of
     return await api.get("/api/options/expirations", params=params)

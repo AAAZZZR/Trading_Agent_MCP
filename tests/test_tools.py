@@ -306,17 +306,24 @@ _CASES = [
         {"category": "commodity"},
         {"category": "commodity"},
     ),
+    # MCP 端 order 預設 desc(agent 多半要最新值);畫圖 / 算 MA 才傳 asc。
     (
         tools.get_macro_series,
         "/api/macro/series/CPI",
         {"series_id": "CPI"},
-        {"limit": "2000"},
+        {"limit": "2000", "order": "desc"},
     ),
     (
         tools.get_macro_series,
         "/api/macro/series/TREASURY_YIELD_10YEAR",
         {"series_id": "TREASURY_YIELD_10YEAR", "start": "2020-01-01", "limit": 500},
-        {"limit": "500", "start": "2020-01-01"},
+        {"limit": "500", "order": "desc", "start": "2020-01-01"},
+    ),
+    (
+        tools.get_macro_series,
+        "/api/macro/series/INDEX_VIX",
+        {"series_id": "INDEX_VIX", "limit": 1, "order": "asc"},
+        {"limit": "1", "order": "asc"},
     ),
 
     # Screener (cross-ticker)
@@ -350,17 +357,17 @@ _CASES = [
     ),
     (tools.get_overview, "/api/overview/AAPL", {"ticker": "aapl"}, {}),
 
-    # Options
+    # Options(工具參數統一成 ticker;但 API 端 query 仍是 underlying)
     (
         tools.get_options_chain,
         "/api/options/chain",
-        {"underlying": "aapl"},
+        {"ticker": "aapl"},
         {"underlying": "AAPL", "limit": "250"},
     ),
     (
         tools.get_options_chain,
         "/api/options/chain",
-        {"underlying": "aapl", "as_of": "2026-06-03", "expiration": "2026-06-03",
+        {"ticker": "aapl", "as_of": "2026-06-03", "expiration": "2026-06-03",
          "option_type": "call", "limit": 5},
         {"underlying": "AAPL", "limit": "5", "as_of": "2026-06-03",
          "expiration": "2026-06-03", "option_type": "call"},
@@ -368,7 +375,7 @@ _CASES = [
     (
         tools.get_option_expirations,
         "/api/options/expirations",
-        {"underlying": "aapl"},
+        {"ticker": "aapl"},
         {"underlying": "AAPL"},
     ),
     (
