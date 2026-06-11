@@ -33,24 +33,70 @@ from trading_agent_mcp.sql_query import (
 )
 
 # ============================================================
+# Meta / data coverage(資料新鮮度與覆蓋範圍 —— agent 信任基石)
+# ============================================================
+
+
+@mcp.tool
+async def get_data_coverage() -> dict[str, Any]:
+    """Report what this dataset actually covers and how fresh each domain is.
+
+    Call this BEFORE quoting exact numbers to the user, whenever data looks stale or
+    surprising, and whenever asked "how current is this data?". It is the trust anchor for
+    every other tool — use it to decide whether a figure is current enough to rely on.
+
+    No tier requirement: every caller can read coverage.
+
+    Reading the fields:
+        - `as_of`: when this coverage report itself was generated.
+        - `domains[]`: one entry per data domain (prices_daily, financials, insider, 13f,
+          options, macro, …).
+        - `domains[].last_data_point`: the newest DATE in the data itself (e.g. the most
+          recent trading day on file). This is what "how new is the data" means — NOT the
+          ingest timestamp.
+        - `domains[].last_ingest_ok`: when the last successful refresh ran (pipeline health).
+        - `domains[].coverage.tickers`: how many symbols the domain covers.
+        - `domains[].date_range`: {from, to} span of available history.
+        - `domains[].cadence`: how often the domain refreshes.
+        - `domains[].known_gaps`: free-text caveat. A null here means "no known gap recorded",
+          which is NOT the same as "zero gaps" — absence of a note is not a guarantee.
+
+    Coverage is US equities + ADRs only: no indices (as tradable tickers), no crypto, no
+    non-US listings, EOD-or-slower, no analyst estimates.
+
+    Data cadence: this report refreshed daily; per-domain freshness is in each domain entry.
+
+    Returns:
+        dict {as_of, notes, domains: [...]}. See field notes above.
+    """
+    return await api.get("/api/meta/coverage")
+
+
+# ============================================================
 # Companies
 # ============================================================
 
 
 @mcp.tool
-async def list_companies() -> list[dict[str, Any]]:
-    """列出所有被追蹤的美股公司,依 ticker 字母排序。
+async def list_companies(limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
+    """列出被追蹤的美股公司,依 ticker 字母排序。
 
-    回傳整個 watchlist(可能 5000+ 筆,沒有分頁)。若只是要找特定公司,改用
-    `search_companies`(吃名稱 / 模糊 ticker)會快很多;要跑統計或自訂篩選用
-    `execute_readonly_sql` 查 `companies` 表。
+    這是「瀏覽 / 抽樣」用,**MCP 端預設只回 200 筆**防灌爆 context。要找特定公司請改用
+    `search_companies`(吃名稱 / 模糊 ticker);要跑全量統計或自訂篩選請用
+    `execute_readonly_sql` 查 `companies` 表。需要更多筆數時調大 limit 或用 offset 分頁。
+
+    Data cadence: company registry refreshed daily ~06:00 UTC.
+
+    Args:
+        limit: 最多回傳幾筆(預設 200)。
+        offset: 跳過前 N 筆,分頁用(>=0,預設 0)。
 
     Returns:
         list[dict],每筆欄位:ticker, cik, name, sector, sic_code, industry,
         exchange, country(目前恆為 null), is_active(bool), first_seen(YYYY-MM-DD),
         last_updated(ISO datetime)。
     """
-    return await api.get("/api/companies")
+    return await api.get("/api/companies", params={"limit": limit, "offset": offset})
 
 
 @mcp.tool
@@ -60,6 +106,8 @@ async def search_companies(q: str, limit: int = 20) -> list[dict[str, Any]]:
     比對 ticker 前綴 / 子字串與名稱子字串(皆 case-insensitive),排序:ticker 完全相等 →
     ticker 前綴 → name 前綴 → 其餘子字串命中,同級短 ticker 優先。找到精確 ticker 後可再用
     `get_company` 取完整基本資料。
+
+    Data cadence: company registry refreshed daily ~06:00 UTC.
 
     Args:
         q: 搜尋關鍵字,例如 "apple"、"nvda"、"semiconductor"(至少 1 個字元)。
@@ -74,6 +122,8 @@ async def search_companies(q: str, limit: int = 20) -> list[dict[str, Any]]:
 @mcp.tool
 async def get_company(ticker: str) -> dict[str, Any]:
     """以精確 ticker 取得單一公司的完整基本資料。不知道精確 ticker 時先用 `search_companies`。
+
+    Data cadence: company registry refreshed daily ~06:00 UTC.
 
     Args:
         ticker: 美股代號,例如 AAPL、MSFT、NVDA(大小寫不拘,自動轉大寫)。
@@ -101,6 +151,8 @@ async def list_filings(
 ) -> list[dict[str, Any]]:
     """列出某公司提交過的 SEC filings,依 filed_at 由新到舊。
 
+    Data cadence: discovered daily 06:00 UTC, parsed same day.
+
     Args:
         ticker: 美股代號(自動轉大寫)。
         form_type: 表格類型過濾,例如 "10-K"(年報)、"10-Q"(季報)、"8-K"(臨時公告)、"4"(內部人交易);省略 = 全部。
@@ -126,6 +178,8 @@ async def list_filings(
 async def get_filing(accession: str) -> dict[str, Any]:
     """以 SEC accession number 取得單一 filing 的後設資料。
 
+    Data cadence: discovered daily 06:00 UTC, parsed same day.
+
     Args:
         accession: SEC accession,例如 "0000320193-24-000123"。
     """
@@ -136,6 +190,8 @@ async def get_filing(accession: str) -> dict[str, Any]:
 async def list_filing_sections(accession: str) -> list[dict[str, Any]]:
     """列出某 filing 已解析的章節目錄(item_code / 標題 / 字元範圍,不含內文)。
 
+    Data cadence: discovered daily 06:00 UTC, parsed same day.
+
     Args:
         accession: SEC accession。
     """
@@ -145,6 +201,8 @@ async def list_filing_sections(accession: str) -> list[dict[str, Any]]:
 @mcp.tool
 async def get_filing_section(accession: str, item_code: str) -> dict[str, Any]:
     """取得單一 filing 章節的完整內文。
+
+    Data cadence: discovered daily 06:00 UTC, parsed same day.
 
     Args:
         accession: SEC accession。
@@ -171,6 +229,8 @@ async def get_income_statements(
 ) -> list[dict[str, Any]]:
     """取得損益表(營收、毛利、營業利益、淨利、EPS 等,金額 USD),依期末由新到舊。
 
+    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; USD-normalized.
+
     Args:
         ticker: 美股代號(自動轉大寫)。
         period: "annual"(年報 FY)或 "quarterly"(季報 Q1-Q4);省略 = 兩者都回。
@@ -193,6 +253,8 @@ async def get_balance_sheets(
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     """取得資產負債表(現金、應收、存貨、PPE、總資產、總負債、權益等,金額 USD),依期末由新到舊。
+
+    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; USD-normalized.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -217,6 +279,8 @@ async def get_cash_flow_statements(
 ) -> list[dict[str, Any]]:
     """取得現金流量表(營業現金流、capex、自由現金流、股利、回購等,金額 USD),依期末由新到舊。
 
+    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; USD-normalized.
+
     Args:
         ticker: 美股代號(自動轉大寫)。
         period: "annual"(FY)或 "quarterly"(Q1-Q4);省略 = 兩者都回。
@@ -238,6 +302,8 @@ async def get_latest_period(
     period: Period | None = None,
 ) -> dict[str, Any]:
     """取得最近一期的三張財報合體(income + balance + cash_flow,同一個 period_end,金額 USD)。
+
+    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; USD-normalized.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -269,6 +335,8 @@ async def list_insider_trades(
 
     這是「單 ticker」視角。要跨整個 universe 篩 open-market 買進(例如「最近誰在買」),
     改用 `screen_insider_buys`。
+
+    Data cadence: Form 4; SEC requires filing within 2 business days of the trade; ingested daily.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -307,6 +375,8 @@ async def list_daily_prices(
     要自行用 `list_dividends` / `list_splits` 調整。要 intraday(小時)粒度改用
     `list_hourly_prices`。完整歷史 pull 可能不小,只要近期請帶 start/end 或縮小 limit。
 
+    Data cadence: EOD T+1, refreshed Mon-Sat ~10:00 UTC; adjusted; 5-year rolling window; NOT real-time.
+
     Args:
         ticker: 美股代號(自動轉大寫)。
         start: 起始日期(YYYY-MM-DD),包含。省略 = 不設下界。
@@ -331,6 +401,8 @@ async def get_latest_price(ticker: str) -> dict[str, Any]:
 
     跟 `list_daily_prices` 同一個第一手日線來源(取最後一筆)。
 
+    Data cadence: EOD T+1, refreshed Mon-Sat ~10:00 UTC; adjusted; 5-year rolling window; NOT real-time.
+
     Args:
         ticker: 美股代號(自動轉大寫)。
 
@@ -351,7 +423,9 @@ async def list_hourly_prices(
     """取得每小時 OHLC + 成交量(dt 升冪,timestamptz)。
 
     粒度比 `list_daily_prices` 細,適合做 intraday 分析或 backtest 對齊。
-    歷史深度有限(僅近約 10 天 resample),要長區間請改用 `list_daily_prices`。
+    歷史深度有限(60 天滾動保留),要長區間請改用 `list_daily_prices`。
+
+    Data cadence: 60-minute bars, Mon-Fri ~22:00 UTC refresh; 60-day rolling retention.
 
     Args:
         ticker: 美股代號。
@@ -368,16 +442,18 @@ async def list_hourly_prices(
 
 
 # ============================================================
-# Holdings(yfinance 資料源)
+# Holdings(第一手自算:13F + Form 4 + 流通股數)
 # ============================================================
 
 
 @mcp.tool
 async def list_institutional_holders(ticker: str) -> list[dict[str, Any]]:
-    """取得主要機構持股清單(第三方聚合,來自 yfinance / Yahoo Finance,通常只有前 10 大)。
+    """取得主要機構持股清單(前幾大,第一手 SEC 13F 自算,非第三方聚合)。
 
-    這是即時但「不完整」的 Yahoo 快照。要第一手、完整、可分析季度變動的 SEC 13F 資料,
+    這是「前幾大」摘要視圖。要完整名單、可分析季度增減變動的 13F 原始資料,
     改用 `list_13f_holders`(by stock)/ `list_13f_portfolio`(by filer)。
+
+    Data cadence: quarterly holdings with 45-day SEC filing lag; refreshed on a daily 1/7 filer rotation.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -391,7 +467,9 @@ async def list_institutional_holders(ticker: str) -> list[dict[str, Any]]:
 
 @mcp.tool
 async def get_holders_breakdown(ticker: str) -> dict[str, Any]:
-    """取得內部人 / 機構持股比例總覽(第三方聚合,來自 yfinance / Yahoo)。
+    """取得內部人 / 機構持股比例總覽(第一手自算:13F 機構持倉 + Form 4 內部人 + 流通股數)。
+
+    Data cadence: quarterly holdings with 45-day SEC filing lag; refreshed on a daily 1/7 filer rotation.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -404,7 +482,7 @@ async def get_holders_breakdown(ticker: str) -> dict[str, Any]:
 
 
 # ============================================================
-# 13F-HR(第一手 SEC 機構持股 —— 比 /holdings yfinance 完整)
+# 13F-HR(第一手 SEC 機構持股原始資料 —— 完整名單與季度變動)
 # ============================================================
 
 
@@ -418,6 +496,8 @@ async def list_13f_holders(
 
     比 `list_institutional_holders`(Yahoo 前 10 大)完整:涵蓋全部申報機構、季度精度、
     並帶較上季的持股變動。要看某一機構的整個組合用 `list_13f_portfolio`。
+
+    Data cadence: quarterly holdings with 45-day SEC filing lag; refreshed on a daily 1/7 filer rotation.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -445,6 +525,8 @@ async def list_13f_portfolio(
     用來回答「Berkshire / 某基金這季持有哪些股票、各多少」。CIK 可從 `list_13f_holders`
     回傳的 filer_cik 取得。
 
+    Data cadence: quarterly holdings with 45-day SEC filing lag; refreshed on a daily 1/7 filer rotation.
+
     Args:
         cik: 機構 CIK(10 碼 zero-pad 字串,例 "0001067983")。
         quarter_end: 季底(YYYY-MM-DD);省略 = 自動取該機構最新一季。
@@ -469,6 +551,8 @@ async def list_13f_top_buyers(
 ) -> list[dict[str, Any]]:
     """列出某股票本季「增持 / 新進最多」的機構(change_in_shares 由大到小)。
 
+    Data cadence: quarterly holdings with 45-day SEC filing lag; refreshed on a daily 1/7 filer rotation.
+
     Args:
         ticker: 美股代號(自動轉大寫)。
         quarter_end: 季底(YYYY-MM-DD);省略 = 自動取該股票最新一季。
@@ -490,6 +574,8 @@ async def list_13f_top_sellers(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """列出某股票本季「減持 / 出清最多」的機構(change_in_shares 由小到大,最負在前)。
+
+    Data cadence: quarterly holdings with 45-day SEC filing lag; refreshed on a daily 1/7 filer rotation.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -520,6 +606,8 @@ async def list_dividends(
 
     給除息跳空判讀,或用 amount 自算還原價(prices 無 adj_close)。
 
+    Data cadence: refreshed weekly (Sunday).
+
     Args:
         ticker: 美股代號(自動轉大寫)。
         limit: 最多回傳幾筆(1-1000,預設 100)。
@@ -545,6 +633,8 @@ async def list_splits(
     """列出某股票的股票分割(split)歷史,依生效日(effective_date)由新到舊。
 
     給在分割點還原歷史價格序列(prices 無 adj_close)。
+
+    Data cadence: refreshed weekly (Sunday).
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -579,6 +669,8 @@ async def list_earnings(
     給 swing trader 避開 earnings gap、安排進出場(單 ticker 視角)。要掃整個市場
     某區間誰公布財報改用 `get_earnings_calendar`。
 
+    Data cadence: calendar refreshed daily 03:00 UTC; report dates are vendor estimates; NO analyst EPS estimates.
+
     Args:
         ticker: 美股代號(自動轉大寫)。
         start: 只取此公布日(含)之後(YYYY-MM-DD);省略 = 不設下界。
@@ -609,6 +701,8 @@ async def get_earnings_calendar(
 
     回答「下週 / 某區間有哪些公司公布財報」。要單一公司的財報日改用 `list_earnings`。
 
+    Data cadence: calendar refreshed daily 03:00 UTC; report dates are vendor estimates; NO analyst EPS estimates.
+
     Args:
         start: 區間起始公布日(含,YYYY-MM-DD);省略 = 不設下界。
         end: 區間結束公布日(含,YYYY-MM-DD);省略 = 不設上界。
@@ -635,6 +729,8 @@ async def get_earnings_calendar(
 async def get_etf_profile(ticker: str) -> dict[str, Any]:
     """取得單一 ETF 的層級 metadata(淨資產 / 費用率 / 配息率 / 是否槓桿等)。
 
+    Data cadence: monthly refresh; fixed universe of 25 large ETFs.
+
     Args:
         ticker: ETF 代號(自動轉大寫,例 SPY、QQQ)。
 
@@ -654,6 +750,8 @@ async def list_etf_holdings(
     offset: int = 0,
 ) -> list[dict[str, Any]]:
     """列出某 ETF 的成分股 + 權重,依權重(weight)由大到小(top holdings 先),分頁。
+
+    Data cadence: monthly refresh; fixed universe of 25 large ETFs.
 
     Args:
         ticker: ETF 代號(自動轉大寫,例 SPY)。
@@ -682,6 +780,8 @@ async def list_etfs_holding_ticker(
     跟 `list_etf_holdings`(由 ETF 看成分)方向相反:這裡由個股 / 標的反查持有它的 ETF,
     給被動資金流判讀(哪些 ETF 重壓這檔)。
 
+    Data cadence: monthly refresh; fixed universe of 25 large ETFs.
+
     Args:
         ticker: 被持有的 symbol(個股或其他標的,自動轉大寫,例 AAPL)。
         limit: 最多回傳幾筆(1-1000,預設 100)。
@@ -708,6 +808,8 @@ async def list_macro_series(category: str | None = None) -> list[dict[str, Any]]
 
     這是查觀測值前的「目錄」步驟:先在這裡挑出 series_id 與看它的 `unit`,再帶 series_id
     去 `get_macro_series` 取時間序列(觀測值本身不帶單位)。
+
+    Data cadence: economic/commodity series monthly; index series (SPX/NDX/VIX) daily (rollout in progress).
 
     Args:
         category: 按類別過濾,'macro' / 'commodity' / 'index';省略 = 全部。
@@ -736,6 +838,8 @@ async def get_macro_series(
     series_id 區分大小寫,請用 `list_macro_series` 目錄拿到的原值(例 CPI、
     TREASURY_YIELD_10YEAR、WTI、INDEX_VIX)。注意:**value 的單位不在本回應裡** ——
     要去 `list_macro_series` 查該 series 的 `unit` 欄位。
+
+    Data cadence: economic/commodity series monthly; index series (SPX/NDX/VIX) daily (rollout in progress).
 
     Args:
         series_id: series 代碼(區分大小寫,來自 `list_macro_series`)。
@@ -775,6 +879,8 @@ async def screen_insider_buys(
     跟 `list_insider_trades`(單 ticker)互補:這裡掃全市場過濾出符合條件的列,依
     transaction_date DESC, usd_value DESC 排序。注意 market_cap 由最新股價估算,PROD 上
     prices 資料未齊時可能多為 null。
+
+    Data cadence: market_cap covers ~7k of ~20k tickers — missing means not-covered, not zero; cross-market screen over EOD data.
 
     Args:
         transaction_code: SEC Form 4 transaction code,預設 "P"(open market 買進);"S" = 賣出。
@@ -829,6 +935,8 @@ async def get_analysis(ticker: str) -> dict[str, Any]:
     永遠回 200(資料缺的面向 verdict="na" 並從綜合分母剔除,不像 get_company 回 404)。
     **overall_verdict 永不 "na"**(全缺退為 "neutral",lenses_scored=0)。
 
+    Data cadence: valuation snapshot self-computed daily 16:00 UTC from latest close x shares; market_cap covers ~7k of ~20k tickers — missing means not-covered, not zero.
+
     Args:
         ticker: 美股代號(大小寫不拘,自動轉大寫)。
 
@@ -865,6 +973,8 @@ async def get_objective_report(
     payload 已為 LLM context 控制:不含 filing 內文(只給章節標題 + section_count,要內文
     再用 `get_filing_section`);13F / 期權只給彙總 + top-N;價格只給摘要 + 最近數十根日 K。
     對 token 敏感時建議用 sections= 只挑需要的塊,別無腦全取。
+
+    Data cadence: valuation snapshot self-computed daily 16:00 UTC from latest close x shares; market_cap covers ~7k of ~20k tickers — missing means not-covered, not zero.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
@@ -907,6 +1017,8 @@ async def get_overview(ticker: str) -> dict[str, Any]:
     純數據快照(貴賤、技術強弱由你判讀)。資料源 Alpha Vantage OVERVIEW(每日刷新)。要逐期
     財報數字用 get_income_statements 等;要四面向結論用 get_analysis。
 
+    Data cadence: valuation snapshot self-computed daily 16:00 UTC from latest close x shares; market_cap covers ~7k of ~20k tickers — missing means not-covered, not zero.
+
     Args:
         ticker: 美股代號(自動轉大寫)。不知道精確 ticker 先用 search_companies。
 
@@ -943,6 +1055,8 @@ async def get_options_chain(
     AV symbol,不保證對得上 companies.ticker(指數選擇權、BRK.B/BRK-B 命名差異)。查無 →
     回空 list;若是符號寫法問題,試 dot/dash 兩種(BRK.B vs BRK-B)或先 search_companies。
 
+    Data cadence: EOD chains for the prior trading day, fetched Mon-Fri 04:00 UTC.
+
     Args:
         underlying: 標的代號(AV symbol,自動轉大寫)。
         as_of: EOD 交易日(YYYY-MM-DD);省略 = 該標的最新交易日。
@@ -975,6 +1089,8 @@ async def get_option_expirations(
 
     給挑 expiration 用 —— 先拿到期日,再帶去 get_options_chain 過濾,避免一次拉整鏈。
 
+    Data cadence: EOD chains for the prior trading day, fetched Mon-Fri 04:00 UTC.
+
     Args:
         underlying: 標的代號(AV symbol,自動轉大寫)。
         as_of: EOD 交易日(YYYY-MM-DD);省略 = 最新交易日。
@@ -996,6 +1112,8 @@ async def get_option_contract_history(
     limit: int = 2000,
 ) -> list[dict[str, Any]]:
     """取得單一 OCC 合約的逐日 EOD 時間序列(報價 / IV / greeks 隨時間),ascending date。
+
+    Data cadence: EOD chains for the prior trading day, fetched Mon-Fri 04:00 UTC.
 
     Args:
         contract_id: OCC 合約代號,區分大小寫原樣(例 "AAPL260605C00200000")。可從
@@ -1026,6 +1144,8 @@ async def search_institutions(q: str, limit: int = 20) -> list[dict[str, Any]]:
 
     拿到 cik 後帶去 list_13f_portfolio 看該機構整個持倉。
 
+    Data cadence: quarterly holdings with 45-day SEC filing lag; refreshed on a daily 1/7 filer rotation.
+
     Args:
         q: 機構名稱或 CIK 關鍵字(至少 1 字元,例 "berkshire"、"1067983")。
         limit: 最多回傳幾筆(1-50,預設 20)。
@@ -1040,6 +1160,8 @@ async def search_institutions(q: str, limit: int = 20) -> list[dict[str, Any]]:
 @mcp.tool
 async def get_institution(cik: str) -> dict[str, Any]:
     """以精確 CIK 取得單一 13F filer 基本資料(名稱 / first_seen / 最新持倉季)。
+
+    Data cadence: quarterly holdings with 45-day SEC filing lag; refreshed on a daily 1/7 filer rotation.
 
     Args:
         cik: 機構 CIK(10 碼 zero-pad 字串,例 "0001067983")。
@@ -1058,6 +1180,8 @@ async def get_institution(cik: str) -> dict[str, Any]:
 @mcp.tool
 async def list_etf_sectors(ticker: str) -> list[dict[str, Any]]:
     """取得某 ETF 的 GICS sector 權重,依權重由大到小。給判讀 ETF 的類股配置。
+
+    Data cadence: monthly refresh; fixed universe of 25 large ETFs.
 
     Args:
         ticker: ETF 代號(自動轉大寫,例 SPY)。

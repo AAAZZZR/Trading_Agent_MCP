@@ -25,6 +25,7 @@ async def test_all_tools_registered() -> None:
     names = {t.name for t in registered}
 
     expected = {
+        "get_data_coverage",
         "list_companies", "search_companies", "get_company",
         "list_filings", "get_filing", "list_filing_sections", "get_filing_section",
         "get_income_statements", "get_balance_sheets", "get_cash_flow_statements",
@@ -56,8 +57,17 @@ async def test_all_tools_registered() -> None:
 
 
 _CASES = [
-    # Companies
-    (tools.list_companies, "/api/companies", {}, {}),
+    # Meta / coverage
+    (tools.get_data_coverage, "/api/meta/coverage", {}, {}),
+
+    # Companies(MCP 端預設分頁 limit=200 / offset=0)
+    (tools.list_companies, "/api/companies", {}, {"limit": "200", "offset": "0"}),
+    (
+        tools.list_companies,
+        "/api/companies",
+        {"limit": 50, "offset": 100},
+        {"limit": "50", "offset": "100"},
+    ),
     (
         tools.search_companies,
         "/api/companies/search",

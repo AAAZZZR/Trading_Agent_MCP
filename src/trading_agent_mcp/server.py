@@ -59,6 +59,8 @@ mcp = FastMCP(
         "資料來源是 investor-db 後端 API。"
         "金額單位為 USD,日期為 YYYY-MM-DD ISO 格式;例外:ETF weight 與費用率 / 配息率為 "
         "0-1 小數(非百分比),macro 觀測值單位逐 series 不同,須查 list_macro_series 的 unit 欄位。\n"
+        "所有資料皆為 EOD 或更慢、無即時報價、無分析師預估(no analyst estimates)。"
+        "引用精確數字給使用者前,先用 get_data_coverage 確認該領域的新鮮度與覆蓋範圍。\n"
         "選工具:不知道精確 ticker 用 search_companies;要快速結論用 get_analysis,要自己分析的原料用 "
         "get_objective_report;查 macro 觀測值前先用 list_macro_series 拿 series_id 與單位;"
         "要彈性 / 統計查詢用 execute_readonly_sql,下手前先用 describe_table 看欄位(兩者需 pro tier)。"
