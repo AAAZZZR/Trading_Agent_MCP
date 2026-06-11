@@ -63,11 +63,13 @@ mcp = FastMCP(
         "引用精確數字給使用者前,先用 get_data_coverage 確認該領域的新鮮度與覆蓋範圍。\n"
         "選工具:不知道精確 ticker 用 search_companies;要快速結論用 get_analysis,要自己分析的原料用 "
         "get_objective_report;查 macro 觀測值前先用 list_macro_series 拿 series_id 與單位;"
-        "要彈性 / 統計查詢用 execute_readonly_sql,下手前先用 describe_table 看欄位(兩者需 pro tier)。"
+        "要彈性 / 統計查詢用 execute_readonly_sql,下手前先用 describe_table 看欄位(兩者需 pro tier)。\n"
+        "另有資料字典 resource(data://dictionary,各表單位 / 調整 / 代碼 / 滯後語意)與分析 prompts"
+        "(analyze_stock / analyze_stock_full / compare_stocks);引用數字或做分析前可先讀。"
     ),
     auth=_build_auth(),
 )
 
-# 註冊 tools(side effect:tools.py 內的 @mcp.tool 裝飾器跑過會把 tool 掛到 mcp 物件上)
-# 放 server 模組底端避免循環 import。
-from trading_agent_mcp import tools  # noqa: E402, F401
+# 註冊 tools / resources / prompts(side effect:各模組內的 @mcp.* 裝飾器跑過會把元件
+# 掛到 mcp 物件上)。放 server 模組底端避免循環 import。
+from trading_agent_mcp import prompts, resources, tools  # noqa: E402, F401
