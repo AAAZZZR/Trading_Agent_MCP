@@ -135,6 +135,11 @@ numeric fields to float; ignore very thin contracts (mark "insufficient sample")
 **Events + macro.** `list_earnings` for the next `report_date` (flag if imminent),
 `list_dividends`, and `get_macro_series` `INDEX_VIX` / `TREASURY_YIELD_10YEAR` as context.
 
+**News & management tone (optional).** For the 消息面 (news) read use `get_company_news`
+(vendor-aggregated, keep `min_relevance >= 0.5`; sentiment is AV's model, not ours). For
+management tone / guidance, `get_earnings_transcript` gives the latest call (page with `offset`
+or filter `speaker` to the CEO; transcript coverage skews to mid/large-cap — say so if absent).
+
 **Synthesize.** One-line overall verdict naming the strongest bullish reason + the biggest
 risk, the per-lens light row, and "based on N/4 lenses" with any ⚪ lens named.
 

@@ -1,7 +1,7 @@
 """MCP resources —— 領域知識層(資料語意字典 + 分析方法論)。
 
 把「表的語意(單位 / 調整 / 代碼 / 滯後)」與「分析該怎麼做」放進協定層,讓接上
-這個 MCP 的外部 agent 不必只靠 44 個 tool 的 docstring 拼湊。內容為英文(給全球
+這個 MCP 的外部 agent 不必只靠 47 個 tool 的 docstring 拼湊。內容為英文(給全球
 agent),透過 `@mcp.resource("uri")` 以 import side-effect 註冊(同 tools.py 模式)。
 
 兩個 resource:
@@ -241,6 +241,61 @@ Which tools serve this domain: `list_earnings` (single ticker),
 - Use it to flag an imminent earnings date (swing traders avoid the gap). `estimate_eps`
   IS a usable vendor consensus EPS for the upcoming report (populated on ~3/4 of entries) —
   cite it with attribution. There are NO ratings, revenue forecasts, or estimate history.
+
+---
+
+## Domain: Earnings call transcripts (earnings_call_transcripts / earnings_call_segments)
+
+Which tools serve this domain: `get_earnings_transcript`.
+
+- Source: Alpha Vantage `EARNINGS_CALL_TRANSCRIPT`, **available ~T+1 after the call, quarterly**.
+  Stored two-layer: the queryable segment rows live in Postgres; the raw JSON is archived to R2
+  (re-parse insurance) — you only ever read the PG rows.
+- **Coverage skews to mid/large-cap.** Many small-caps have no transcript at all; the tool
+  honestly errors for those rather than inventing one.
+- **Tombstone semantics:** internally a `(ticker, quarter)` row with `segments = 0` means "we
+  asked AV and there is NO transcript for that quarter" (a negative cache so we do not re-fetch).
+  **Tombstones are never exposed** — `get_earnings_transcript` and the transcript list only
+  surface quarters with `segments > 0`.
+- Segment fields: `seq` (0-based order within the call), `speaker`, `speaker_title`, `content`,
+  `sentiment`. A call is typically **~60-80 segments, ~40-50k characters of text total**.
+- **`sentiment` is a per-segment score from AV's own model (a vendor metric, NOT computed by this
+  platform)** — treat it as a soft signal, not a precise number. There is no platform-side
+  sentiment on transcripts.
+- `quarter` is the AV **calendar** quarter string, e.g. `2025Q4`. Omitting it returns the latest
+  available quarter.
+- Pitfall: a call's full text is large — `get_earnings_transcript` defaults to `limit=40`
+  segments to protect context; page with `offset` for the rest, or pass `speaker` to read just
+  one person (e.g. the CEO). `segments_total` is the whole-call length regardless of paging.
+
+---
+
+## Domain: News + sentiment (news_articles / news_ticker_sentiment)
+
+Which tools serve this domain: `get_company_news` (single ticker), `get_market_news`
+(market-wide).
+
+- **Source: Alpha Vantage `NEWS_SENTIMENT` — a VENDOR AGGREGATION, not first-hand SEC data.**
+  This is the one clearly third-party domain here; frame it as such. The aggregator mixes in
+  low-grade sources, so **source quality varies** and relevance filtering is essential.
+- **Vendor source grading via `relevance`:** `news_ticker_sentiment.relevance` (0-1) is how
+  related an article is to a given ticker. **Keep `min_relevance >= 0.5` for signal** — below
+  that it is mostly keyword-spam noise. `get_company_news` defaults to 0.5.
+- **Sentiment fields are AV's model scores (vendor metric, not ours).** Each article has an
+  `overall_sentiment` (NUMERIC, market-wide) + `overall_label` (AV's text label, e.g.
+  `Bullish` / `Somewhat-Bullish` / `Neutral` / `Bearish`); each ticker link additionally has a
+  per-ticker `sentiment` + `label`. Do not present these as platform-computed.
+- Article fields: `url` (UNIQUE — this IS the link to the publisher; AV gives only title +
+  `summary`, never full body text), `title`, `summary`, `source`, `source_domain`,
+  `published_at`, `topics` (JSONB `[{topic, relevance}]`). `get_market_news` can filter by
+  `topic` (e.g. `earnings`, `ipo`, `mergers_and_acquisitions`, `financial_markets`,
+  `technology`).
+- **Retention: 12 months** (older articles are trimmed weekly). Do not expect multi-year news
+  history.
+- **Cadence: refreshed every 4 hours — labelled by fetch time, NOT real-time.** The platform
+  stays EOD-positioned; the news block is "as of its last fetch", never sold as a live feed.
+  This is the 消息面 (news/sentiment) lens: query the DB here first, and use web search only as a
+  supplement.
 
 ---
 

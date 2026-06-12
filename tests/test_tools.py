@@ -37,6 +37,8 @@ async def test_all_tools_registered() -> None:
         "list_13f_top_buyers", "list_13f_top_sellers",
         "list_dividends", "list_splits",
         "list_earnings", "get_earnings_calendar",
+        "get_earnings_transcript",
+        "get_company_news", "get_market_news",
         "get_etf_profile", "list_etf_holdings", "list_etfs_holding_ticker",
         "list_macro_series", "get_macro_series",
         "get_market_movers", "get_ipo_calendar",
@@ -268,6 +270,32 @@ _CASES = [
         {"limit": "100", "start": "2026-06-01", "end": "2026-06-07"},
     ),
 
+    # News + sentiment(get_earnings_transcript 是多 call,另測;這裡放單 call 的 news)
+    (
+        tools.get_company_news,
+        "/api/companies/AAPL/news",
+        {"ticker": "aapl"},
+        {"days": "7", "min_relevance": "0.5", "limit": "20"},
+    ),
+    (
+        tools.get_company_news,
+        "/api/companies/AAPL/news",
+        {"ticker": "aapl", "days": 30, "min_relevance": 0.7, "limit": 5},
+        {"days": "30", "min_relevance": "0.7", "limit": "5"},
+    ),
+    (
+        tools.get_market_news,
+        "/api/market/news",
+        {},
+        {"limit": "20"},
+    ),
+    (
+        tools.get_market_news,
+        "/api/market/news",
+        {"topic": "earnings", "limit": 50},
+        {"limit": "50", "topic": "earnings"},
+    ),
+
     # ETF
     (
         tools.get_etf_profile,
@@ -484,3 +512,102 @@ async def test_get_ipo_calendar_500_raises_tool_error() -> None:
         with pytest.raises(ToolError) as excinfo:
             await _unwrap(tools.get_ipo_calendar)()
     assert "500" in str(excinfo.value)
+
+
+# ---- get_earnings_transcript(多 call:先 list 再 detail)--------------------
+
+
+async def test_get_earnings_transcript_explicit_quarter() -> None:
+    """帶 quarter:先打 list(挑 available_quarters),再打該季 detail。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        list_route = mock.get("/api/companies/AAPL/transcripts").respond(
+            200,
+            json=[
+                {"quarter": "2025Q4", "segments": 71, "fetched_at": "2026-02-01T12:00:00Z"},
+                {"quarter": "2025Q3", "segments": 68, "fetched_at": "2025-11-01T12:00:00Z"},
+            ],
+        )
+        detail_route = mock.get("/api/companies/AAPL/transcripts/2025Q3").respond(
+            200,
+            json={
+                "ticker": "AAPL",
+                "quarter": "2025Q3",
+                "segments_total": 68,
+                "fetched_at": "2025-11-01T12:00:00Z",
+                "segments": [{"seq": 0, "speaker": "Tim Cook", "speaker_title": "CEO",
+                              "content": "...", "sentiment": "0.4"}],
+            },
+        )
+        result = await _unwrap(tools.get_earnings_transcript)(
+            ticker="aapl", quarter="2025q3", limit=10
+        )
+
+    assert list_route.called
+    assert detail_route.called
+    # 預設 limit=40,這裡顯式帶 10;offset 預設 0。
+    sent = detail_route.calls.last.request
+    assert dict(sent.url.params) == {"offset": "0", "limit": "10"}
+    assert result["quarter"] == "2025Q3"
+    assert result["available_quarters"] == ["2025Q4", "2025Q3"]
+
+
+async def test_get_earnings_transcript_omitted_quarter_picks_latest() -> None:
+    """quarter 省略:自動取 list 第一筆(最新季)當 target。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/companies/AAPL/transcripts").respond(
+            200,
+            json=[
+                {"quarter": "2025Q4", "segments": 71, "fetched_at": "2026-02-01T12:00:00Z"},
+            ],
+        )
+        latest_route = mock.get("/api/companies/AAPL/transcripts/2025Q4").respond(
+            200,
+            json={"ticker": "AAPL", "quarter": "2025Q4", "segments_total": 71,
+                  "fetched_at": "2026-02-01T12:00:00Z", "segments": []},
+        )
+        result = await _unwrap(tools.get_earnings_transcript)(ticker="aapl")
+
+    assert latest_route.called
+    # 預設 limit=40 protect context。
+    sent = latest_route.calls.last.request
+    assert dict(sent.url.params) == {"offset": "0", "limit": "40"}
+    assert result["available_quarters"] == ["2025Q4"]
+
+
+async def test_get_earnings_transcript_no_transcripts_raises_tool_error() -> None:
+    """公司無任何逐字稿(list 回空)→ ToolError 誠實說無資料,不去打 detail。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        list_route = mock.get("/api/companies/SMALLCO/transcripts").respond(200, json=[])
+        with pytest.raises(ToolError) as excinfo:
+            await _unwrap(tools.get_earnings_transcript)(ticker="smallco")
+    assert list_route.called
+    assert "No earnings call transcripts" in str(excinfo.value)
+
+
+async def test_get_earnings_transcript_speaker_filter_forwarded() -> None:
+    """speaker 過濾轉成 detail 的 query param。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/companies/AAPL/transcripts").respond(
+            200,
+            json=[{"quarter": "2025Q4", "segments": 71, "fetched_at": "2026-02-01T12:00:00Z"}],
+        )
+        detail_route = mock.get("/api/companies/AAPL/transcripts/2025Q4").respond(
+            200,
+            json={"ticker": "AAPL", "quarter": "2025Q4", "segments_total": 71,
+                  "fetched_at": "2026-02-01T12:00:00Z", "segments": []},
+        )
+        await _unwrap(tools.get_earnings_transcript)(
+            ticker="aapl", speaker="cook", offset=40
+        )
+
+    sent = detail_route.calls.last.request
+    assert dict(sent.url.params) == {"offset": "40", "limit": "40", "speaker": "cook"}
+
+
+async def test_get_company_news_404_raises_tool_error() -> None:
+    """company news 後端 404 → ToolError(走 api.get 咽喉點)。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/companies/NOPE/news").respond(404, json={"detail": "Unknown ticker"})
+        with pytest.raises(ToolError) as excinfo:
+            await _unwrap(tools.get_company_news)(ticker="nope")
+    assert "404" in str(excinfo.value)

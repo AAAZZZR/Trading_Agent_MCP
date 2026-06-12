@@ -5,7 +5,7 @@
 
 錯誤翻譯:`get()` 是所有 API-backed tool 的單一咽喉點,所以在這裡把 httpx 的裸
 HTTPStatusError / 連線錯誤翻成 FastMCP 的 `ToolError`,訊息「教 agent 下一步」,
-這樣 41 個 tool 自動受惠、個別 tool 不必各自處理。
+這樣 47 個 tool 自動受惠、個別 tool 不必各自處理。
 """
 
 from __future__ import annotations

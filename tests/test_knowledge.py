@@ -64,6 +64,11 @@ async def test_dictionary_content_anchors() -> None:
         "ipo_calendar",  # IPO 行事曆 domain
         "delisted_at",  # 下市偵測語意(status + 日期)
         "not-yet-priced",  # IPO 未定價 = null ≠ $0
+        "earnings_call_transcripts",  # 逐字稿 domain
+        "Tombstone semantics",  # 逐字稿 tombstone(segments=0)語意
+        "news_ticker_sentiment",  # 新聞情緒 domain
+        "VENDOR AGGREGATION",  # 新聞為 vendor 聚合源(非第一手)
+        "min_relevance >= 0.5",  # 新聞 relevance 訊號門檻
     ):
         assert anchor in text, f"data dictionary missing anchor: {anchor!r}"
 

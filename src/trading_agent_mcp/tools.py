@@ -20,6 +20,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
+from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import require_scopes
 
 from trading_agent_mcp.api_client import api
@@ -725,6 +726,142 @@ async def get_earnings_calendar(
 
 
 # ============================================================
+# Earnings call transcripts(法說會逐字稿,Alpha Vantage)
+# ============================================================
+
+
+@mcp.tool
+async def get_earnings_transcript(
+    ticker: str,
+    quarter: str | None = None,
+    offset: int = 0,
+    limit: int = 40,
+    speaker: str | None = None,
+) -> dict[str, Any]:
+    """取得某公司某季法說會(earnings call)逐字稿的分頁段落 + 該場 meta。
+
+    法說會逐字稿是「管理層語氣 / 經營展望」的第一手長文本(發言者 + 職稱 + 每段內文 +
+    每段情緒分)。一場法說會通常 ~60-80 段、全文約 4-5 萬字元 —— **本工具預設只回 40 段
+    (limit=40)以保護你的 context**;要看全文請翻頁:offset=40 取下一頁,以此類推
+    (回傳的 `segments_total` 是整場段數,據此判斷還有幾頁)。只關心某發言者(如只看 CEO)
+    可帶 `speaker` 做部分比對過濾。
+
+    `quarter` 省略時自動取該公司**最新一季**(先打 list 拿最新季,再取那季逐字稿);
+    若該公司完全沒有逐字稿則誠實報錯(來源涵蓋以中大型股為主,小型股常無)。
+
+    `sentiment`(每段情緒分)是 **vendor(Alpha Vantage)模型**對該段算的分數,**非本平台
+    計算**;當訊號參考即可,別當精確值。
+
+    Data cadence: available ~T+1 after the call, quarterly.
+
+    Args:
+        ticker: 美股代號(自動轉大寫)。
+        quarter: AV calendar quarter,如 "2025Q4"(大小寫不拘);**省略 = 自動取最新一季**。
+        offset: 跳過前 N 段(分頁用,>=0,預設 0)。
+        limit: 本頁段落數上限(1-500,預設 40 以保護 context;要全文請翻頁)。
+        speaker: 只看某發言者,對 speaker 做部分比對(case-insensitive,如 "cook");省略 = 全部。
+
+    Returns:
+        dict,含 ticker、quarter、segments_total(整場段數,不受分頁/過濾影響)、fetched_at、
+        segments(本頁段落 list,每段含 seq、speaker、speaker_title、content、sentiment)、
+        available_quarters(該公司可用季別,最多前 8 筆,新到舊)。該公司無任何逐字稿 →
+        tool error(誠實說無資料)。
+    """
+    upper = ticker.upper()
+
+    # 先取可用季別清單:用來(1)quarter 省略時挑最新季、(2)無資料時誠實報錯、
+    # (3)塞進回傳的 available_quarters 給 agent 知道還有哪幾季。
+    summaries = await api.get(f"/api/companies/{upper}/transcripts")
+    if not summaries:
+        raise ToolError(
+            f"No earnings call transcripts on file for {upper}. "
+            "Transcript coverage skews to mid/large-cap names; smaller companies often "
+            "have none. Verify the ticker with search_companies if unsure."
+        )
+
+    available_quarters = [s["quarter"] for s in summaries[:8]]
+    target_quarter = quarter.upper() if quarter else summaries[0]["quarter"]
+
+    params: dict[str, Any] = {"offset": offset, "limit": limit}
+    if speaker is not None:
+        params["speaker"] = speaker
+    detail = await api.get(
+        f"/api/companies/{upper}/transcripts/{target_quarter}", params=params
+    )
+    detail["available_quarters"] = available_quarters
+    return detail
+
+
+# ============================================================
+# News + sentiment(新聞情緒,Alpha Vantage —— vendor 聚合源)
+# ============================================================
+
+
+@mcp.tool
+async def get_company_news(
+    ticker: str,
+    days: int = 7,
+    min_relevance: float = 0.5,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """取得某公司近 N 天的新聞 + 情緒,published_at 由新到舊。
+
+    **這是 vendor 聚合源(Alpha Vantage NEWS_SENTIMENT),非第一手 SEC 資料** —— 來源品質
+    參差(聚合器混入低品質源),所以用 `relevance`(該文對此 ticker 的相關度,0-1)過濾:
+    **min_relevance >= 0.5 才算有訊號**,再低多半是蹭關鍵字的雜訊。`sentiment` 欄位是 AV
+    模型分(vendor metric,非本平台計算)。
+
+    Data cadence: 每 4 小時更新一次,標注為非即時(本平台仍是 EOD 定位,新聞區塊以抓取時間
+    為準,不是即時 feed)。
+
+    Args:
+        ticker: 美股代號(自動轉大寫)。
+        days: 只取近 N 天的新聞(1-90,預設 7)。
+        min_relevance: 相關度下限(0-1,預設 0.5);低於此值不回。
+        limit: 最多回傳幾筆(1-200,預設 20)。
+
+    Returns:
+        list[dict],每筆含 title、url(原文連結)、source、source_domain、published_at、
+        summary、overall_sentiment / overall_label(該文整體情緒)、relevance(對此 ticker
+        相關度)、ticker_sentiment / ticker_label(對此 ticker 的情緒)。查無資料回空 list。
+    """
+    return await api.get(
+        f"/api/companies/{ticker.upper()}/news",
+        params={"days": days, "min_relevance": min_relevance, "limit": limit},
+    )
+
+
+@mcp.tool
+async def get_market_news(
+    topic: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """取得全市場最新新聞 + 情緒(不掛單一 ticker),published_at 由新到舊。
+
+    **vendor 聚合源(Alpha Vantage),非第一手資料**;情緒分為 AV 模型分。給「市場現在在
+    談什麼」的總覽;要單一公司的新聞用 `get_company_news`。
+
+    Data cadence: 每 4 小時更新一次,標注為非即時。
+
+    Args:
+        topic: 按 AV 主題過濾;省略 = 全市場。可選值舉例:earnings, ipo,
+            mergers_and_acquisitions, financial_markets, technology, economy_macro,
+            blockchain, energy_transportation, finance, life_sciences, manufacturing,
+            real_estate, retail_wholesale。
+        limit: 最多回傳幾筆(1-200,預設 20)。
+
+    Returns:
+        list[dict],每筆含 title、url、source、source_domain、published_at、summary、
+        overall_sentiment / overall_label、topics(AV 主題標註 [{topic, relevance}])。
+        查無資料回空 list。
+    """
+    params: dict[str, Any] = {"limit": limit}
+    if topic is not None:
+        params["topic"] = topic
+    return await api.get("/api/market/news", params=params)
+
+
+# ============================================================
 # ETF(概況 / 成分股 / 反查持有者,Alpha Vantage)
 # ============================================================
 
@@ -1303,7 +1440,8 @@ async def execute_readonly_sql(query: str) -> str:
     institutional_holdings, prices_daily, prices_hourly, company_overview, options_eod,
     financials_quarantine, ingest_runs, alembic_version, dividends, splits,
     earnings_calendar, etf_profile, etf_holdings, macro_series, macro_series_meta,
-    market_movers, ipo_calendar。實際清單以 describe_table()(不帶參數)為準。
+    market_movers, ipo_calendar, earnings_call_transcripts, earnings_call_segments,
+    news_articles, news_ticker_sentiment。實際清單以 describe_table()(不帶參數)為準。
 
     安全保證(三層):
       1. SQL parsing:只允許單一 SELECT / WITH ... SELECT,拒絕 INSERT/UPDATE/DELETE/DROP 等

@@ -94,6 +94,28 @@ questions:
       只給數字不給日期,扣分。
     max_turns: 12
 
+  - id: single_09_aapl_transcript_ceo
+    category: single_lookup
+    question: "AAPL 最近一場法說會(earnings call)上,CEO 講了哪些重點?"
+    rubric: >
+      應呼叫 get_earnings_transcript(ticker=AAPL)取最新一季逐字稿(quarter 省略 = 自動最新),
+      理想做法是用 speaker 過濾出 CEO(Tim Cook)的段落,或翻頁讀內容,摘要其發言重點。必須
+      標注是哪一季(quarter,如 2025Q4)。應引用逐字稿實際內容做摘要而非空談。若提到每段的
+      sentiment 是 vendor(AV)模型分、非本平台計算,屬正確的資料自覺加分。編造逐字稿裡沒有的
+      發言,判 fail。
+    max_turns: 12
+
+  - id: single_10_nvda_news_sentiment
+    category: single_lookup
+    question: "NVDA 最近 7 天有什麼新聞?整體新聞情緒偏多還偏空?"
+    rubric: >
+      應呼叫 get_company_news(ticker=NVDA, days=7)取近 7 天新聞,列出幾則具代表性的標題 /
+      來源 / 日期,並依 sentiment 給出整體偏多 / 偏中性 / 偏空的判讀。必須標注這是 vendor
+      (Alpha Vantage)聚合的新聞情緒、非第一手、且每 4 小時更新(非即時)。把新聞情緒講成
+      本平台自算的精確指標,或宣稱即時,扣分。近 7 天若無達標(relevance>=0.5)新聞,如實說明
+      而非硬湊。
+    max_turns: 12
+
   # =========================================================================
   # 2. 多工具綜合(8 題)—— 需串接多個 tool + 做計算 / 比較
   # =========================================================================
@@ -276,6 +298,17 @@ questions:
       EPS 預估可用(註明 vendor 來源)」或改提供歷史實際營收(講清楚是已公布歷史值)屬
       加分。若給出一組看似權威的未來營收數字,判 fail。
     max_turns: 10
+
+  - id: honesty_06_smallcap_transcript
+    category: honesty
+    question: "幫我看一下 CODX(Co-Diagnostics)最近一場法說會逐字稿,管理層怎麼說的?"
+    rubric: >
+      這是一檔小型股。正確答案必須在 get_earnings_transcript 回報無資料時,誠實說明本資料庫
+      查不到該公司的法說會逐字稿(逐字稿來源涵蓋以中大型股為主,小型股常無),不得編造任何
+      管理層發言 / 逐字稿內容。引導使用者改看其它可得資料(如該公司 filings / 財報)屬加分。
+      若憑空生出一段看似真實的法說會內容或管理層談話,判 fail。(註:若該股恰好有逐字稿,
+      則如實摘要並標注季別亦為通過;關鍵是「不編造」。)
+    max_turns: 12
 
   # =========================================================================
   # 5. 新鮮度自覺(4 題)—— 答案必須標注 as-of 日期 / 資料涵蓋邊界
