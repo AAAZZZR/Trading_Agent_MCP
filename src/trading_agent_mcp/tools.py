@@ -132,8 +132,10 @@ async def get_company(ticker: str) -> dict[str, Any]:
 
     Returns:
         dict,欄位:ticker, cik, name, sector, sic_code, industry, exchange,
-        country(目前恆為 null), is_active(bool), first_seen(YYYY-MM-DD),
-        last_updated(ISO datetime)。查無此 ticker → tool error(後端 404)。
+        country(目前恆為 null), is_active(bool), status('active'|'delisted'),
+        delisted_at(下市日 YYYY-MM-DD,active 時為 null), first_seen(YYYY-MM-DD),
+        last_updated(ISO datetime)。**判斷是否下市以 status / delisted_at 為準
+        (價格停更 ≠ 下市)**。查無此 ticker → tool error(後端 404)。
     """
     return await api.get(f"/api/companies/{ticker.upper()}")
 
@@ -868,6 +870,69 @@ async def get_macro_series(
 
 
 # ============================================================
+# Market snapshot(全市場漲跌榜 + IPO 行事曆,Alpha Vantage)
+# ============================================================
+
+
+@mcp.tool
+async def get_market_movers(date: str | None = None) -> dict[str, Any]:
+    """取得某交易日的全市場漲幅榜 / 跌幅榜 / 成交最熱榜(各 top 20)。
+
+    全市場「當天誰在動」的快照,不掛單一 ticker。三個 category 的含義:
+      - gainers(漲幅榜):當日 change_pct 最高的 20 檔(漲最多)。
+      - losers(跌幅榜):當日 change_pct 最低的 20 檔(跌最多)。
+      - most_active(成交最熱):當日成交量最大的 20 檔(不論漲跌)。
+    要單一公司的價格用 get_latest_price / list_daily_prices。資料來源 Alpha Vantage
+    TOP_GAINERS_LOSERS。
+
+    Data cadence: 每交易日收盤後更新;非即時(EOD)。
+
+    Args:
+        date: 交易日(YYYY-MM-DD);**省略 = 自動取最新一天(建議不帶,直接拿最新)**。
+            帶了某日但該日無資料 → tool error(後端 404,改成不帶 date 取最新)。
+
+    Returns:
+        dict,含 date(該快照交易日 YYYY-MM-DD)、last_updated(該日刷新時間 ISO,可能
+        null)、gainers / losers / most_active 三個 list。每筆含 rank(1-20)、ticker、
+        price(USD)、change_amount(相對前一交易日的價格變動,USD)、change_pct(變動
+        百分比數值,如 5.23 = +5.23%,**非 0-1 小數**)、volume(當日成交量)。
+    """
+    params: dict[str, Any] = {}
+    if date is not None:
+        params["date"] = date
+    return await api.get("/api/market/movers", params=params)
+
+
+@mcp.tool
+async def get_ipo_calendar(
+    from_date: str | None = None,
+    to_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """取得 IPO 行事曆(近期 / 即將上市新股),依掛牌日(ipo_date)由舊到新。
+
+    一列一檔即將 / 近期 IPO。資料來源 Alpha Vantage IPO_CALENDAR。
+
+    Data cadence: 每日更新;IPO 日期與價格區間可能變動,0/null = 未定價。
+
+    Args:
+        from_date: 起始掛牌日(含,YYYY-MM-DD);**省略 = 今天**。
+        to_date: 結束掛牌日(含,YYYY-MM-DD);**省略 = 今天起 90 天**。
+            (兩個都省略才套「今天 ~ +90 天」預設視窗;只帶一邊就只約束那一邊。)
+
+    Returns:
+        list[dict],每筆含 symbol、ipo_date(預定掛牌日 YYYY-MM-DD)、name、
+        price_range_low / price_range_high(定價區間,USD,**null = 尚未定價**)、
+        currency(ISO 4217)、exchange(掛牌交易所)。查無資料回空 list。
+    """
+    params: dict[str, Any] = {}
+    if from_date is not None:
+        params["from_date"] = from_date
+    if to_date is not None:
+        params["to_date"] = to_date
+    return await api.get("/api/market/ipo-calendar", params=params)
+
+
+# ============================================================
 # Screener(跨 ticker 篩選)
 # ============================================================
 
@@ -1237,8 +1302,8 @@ async def execute_readonly_sql(query: str) -> str:
     income_statements, balance_sheets, cash_flow_statements, insider_trades,
     institutional_holdings, prices_daily, prices_hourly, company_overview, options_eod,
     financials_quarantine, ingest_runs, alembic_version, dividends, splits,
-    earnings_calendar, etf_profile, etf_holdings, macro_series, macro_series_meta。
-    實際清單以 describe_table()(不帶參數)為準。
+    earnings_calendar, etf_profile, etf_holdings, macro_series, macro_series_meta,
+    market_movers, ipo_calendar。實際清單以 describe_table()(不帶參數)為準。
 
     安全保證(三層):
       1. SQL parsing:只允許單一 SELECT / WITH ... SELECT,拒絕 INSERT/UPDATE/DELETE/DROP 等

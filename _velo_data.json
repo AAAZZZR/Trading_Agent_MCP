@@ -1,0 +1,384 @@
+{
+ "search": {
+  "candidates": [
+   {
+    "ticker": "VELO",
+    "name": "Velo3D, Inc.",
+    "exchange": "Nasdaq"
+   },
+   {
+    "ticker": "VEL",
+    "name": "Velocity Financial, Inc.",
+    "exchange": "NYSE"
+   },
+   {
+    "ticker": "VLDXW",
+    "name": "Velo3D, Inc.",
+    "exchange": "Nasdaq"
+   },
+   {
+    "ticker": "NB",
+    "name": "NIOCORP DEVELOPMENTS LTD",
+    "exchange": "Nasdaq"
+   },
+   {
+    "ticker": "FMX",
+    "name": "MEXICAN ECONOMIC DEVELOPMENT INC",
+    "exchange": "NYSE"
+   },
+   {
+    "ticker": "ODV",
+    "name": "Osisko Development Corp.",
+    "exchange": "NYSE"
+   },
+   {
+    "ticker": "PIZ",
+    "name": "INVESCO DORSEY WRIGHT DEVELO",
+    "exchange": null
+   },
+   {
+    "ticker": "PXF",
+    "name": "INVESCO RAFI DEVELOPED MARKE",
+    "exchange": null
+   },
+   {
+    "ticker": "VEA",
+    "name": "VANGUARD FTSE DEVELOPED ETF",
+    "exchange": null
+   },
+   {
+    "ticker": "BBAX",
+    "name": "JPMORGAN BETABUILDERS DEVELO",
+    "exchange": null
+   }
+  ],
+  "error": null
+ },
+ "resolved_ticker": "VELO",
+ "company": {
+  "ticker": "VELO",
+  "cik": "0001825079",
+  "cusip": null,
+  "name": "Velo3D, Inc.",
+  "sector": null,
+  "sic_code": "3559",
+  "industry": "Special Industry Machinery, NEC",
+  "exchange": "Nasdaq",
+  "reporting_currency": "USD",
+  "country": null,
+  "is_active": true,
+  "first_seen": "2026-05-25",
+  "last_updated": "2026-06-11T06:27:40.061399Z"
+ },
+ "overview": {
+  "ticker": "VELO",
+  "market_cap": 483670262,
+  "shares_outstanding": 29801002,
+  "ebitda": null,
+  "revenue_ttm": 50469000,
+  "gross_profit_ttm": -5720000,
+  "pe_ratio": -3.6228,
+  "forward_pe": null,
+  "peg_ratio": null,
+  "price_to_book": 9.3844,
+  "price_to_sales_ttm": 9.5835,
+  "ev_to_ebitda": null,
+  "ev_to_revenue": 9.437,
+  "eps": -4.48,
+  "diluted_eps_ttm": -4.48,
+  "book_value": 1.7295,
+  "dividend_per_share": null,
+  "dividend_yield": null,
+  "profit_margin": -1.049139,
+  "operating_margin_ttm": -0.989637,
+  "return_on_assets_ttm": -0.573016,
+  "return_on_equity_ttm": -1.027338,
+  "beta": 3.9794,
+  "week_52_high": 26.5,
+  "week_52_low": 2.81,
+  "ma_50": 15.3291,
+  "ma_200": 10.5676,
+  "analyst_target_price": 22.5,
+  "latest_quarter": "2026-03-31",
+  "updated_at": "2026-06-09T16:01:43.814234Z"
+ },
+ "price": {
+  "as_of": "2026-06-09",
+  "close": 19.43,
+  "bars_1y": 257,
+  "ret_1m_pct": 44.4,
+  "ret_3m_pct": 56.8,
+  "ret_6m_pct": 248.8,
+  "ret_1y_pct": 149.1,
+  "hi_52w": 25.8,
+  "lo_52w": 2.97,
+  "pos_52w_pct": 72.1,
+  "ma50": 15.54,
+  "ma200": 10.65,
+  "vol_last": 9221928.0,
+  "vol_avg50": 2989907
+ },
+ "income_q": [
+  {
+   "fiscal_year": 2026,
+   "fiscal_period": "Q1",
+   "period_end": "2026-03-31",
+   "revenue": 13816000,
+   "gross_profit": 2381000,
+   "operating_income": -6947000,
+   "net_income": -6998000,
+   "eps_diluted": "-0.2800",
+   "shares_diluted": 25021065
+  },
+  {
+   "fiscal_year": 2025,
+   "fiscal_period": "Q3",
+   "period_end": "2025-09-30",
+   "revenue": 13640000,
+   "gross_profit": 433000,
+   "operating_income": -10630000,
+   "net_income": -11825000,
+   "eps_diluted": "-0.6900",
+   "shares_diluted": 17124361
+  },
+  {
+   "fiscal_year": 2025,
+   "fiscal_period": "Q2",
+   "period_end": "2025-06-30",
+   "revenue": 13572000,
+   "gross_profit": -1588000,
+   "operating_income": -12089000,
+   "net_income": -13756000,
+   "eps_diluted": "-0.9800",
+   "shares_diluted": 14041712
+  },
+  {
+   "fiscal_year": 2025,
+   "fiscal_period": "Q1",
+   "period_end": "2025-03-31",
+   "revenue": 9320000,
+   "gross_profit": 697000,
+   "operating_income": -11921000,
+   "net_income": -25411000,
+   "eps_diluted": "-0.1300",
+   "shares_diluted": 200971566
+  },
+  {
+   "fiscal_year": 2024,
+   "fiscal_period": "Q3",
+   "period_end": "2024-09-30",
+   "revenue": 8247000,
+   "gross_profit": 4071000,
+   "operating_income": -18745000,
+   "net_income": -22858000,
+   "eps_diluted": "-2.4700",
+   "shares_diluted": 9240453
+  },
+  {
+   "fiscal_year": 2024,
+   "fiscal_period": "Q2",
+   "period_end": "2024-06-30",
+   "revenue": 10344000,
+   "gross_profit": -2897000,
+   "operating_income": -20520000,
+   "net_income": -172000,
+   "eps_diluted": "-0.0200",
+   "shares_diluted": 8475386
+  },
+  {
+   "fiscal_year": 2024,
+   "fiscal_period": "Q1",
+   "period_end": "2024-03-31",
+   "revenue": 9786000,
+   "gross_profit": -2815000,
+   "operating_income": -21450000,
+   "net_income": -28314000,
+   "eps_diluted": "-0.1100",
+   "shares_diluted": 260294161
+  },
+  {
+   "fiscal_year": 2023,
+   "fiscal_period": "Q3",
+   "period_end": "2023-09-30",
+   "revenue": 23808000,
+   "gross_profit": 1488000,
+   "operating_income": -25221000,
+   "net_income": -17396000,
+   "eps_diluted": "-0.0900",
+   "shares_diluted": 197833109
+  },
+  {
+   "fiscal_year": 2023,
+   "fiscal_period": "Q2",
+   "period_end": "2023-06-30",
+   "revenue": 25134000,
+   "gross_profit": 2980000,
+   "operating_income": -25706000,
+   "net_income": -23201000,
+   "eps_diluted": "-0.1200",
+   "shares_diluted": 193917908
+  }
+ ],
+ "cashflow_q": [
+  {
+   "fiscal_period": "Q1",
+   "period_end": "2026-03-31",
+   "operating_cash_flow": -17978000,
+   "capex": 940000,
+   "free_cash_flow": -18918000
+  },
+  {
+   "fiscal_period": "Q3",
+   "period_end": "2025-09-30",
+   "operating_cash_flow": -19590000,
+   "capex": 2112000,
+   "free_cash_flow": -21702000
+  },
+  {
+   "fiscal_period": "Q2",
+   "period_end": "2025-06-30",
+   "operating_cash_flow": -13565000,
+   "capex": 1799000,
+   "free_cash_flow": -15364000
+  },
+  {
+   "fiscal_period": "Q1",
+   "period_end": "2025-03-31",
+   "operating_cash_flow": -12349000,
+   "capex": 0,
+   "free_cash_flow": -12349000
+  },
+  {
+   "fiscal_period": "Q3",
+   "period_end": "2024-09-30",
+   "operating_cash_flow": -30465000,
+   "capex": 28000,
+   "free_cash_flow": -30493000
+  },
+  {
+   "fiscal_period": "Q2",
+   "period_end": "2024-06-30",
+   "operating_cash_flow": -28492000,
+   "capex": 8000,
+   "free_cash_flow": -28500000
+  },
+  {
+   "fiscal_period": "Q1",
+   "period_end": "2024-03-31",
+   "operating_cash_flow": -20523000,
+   "capex": 6000,
+   "free_cash_flow": -20529000
+  },
+  {
+   "fiscal_period": "Q3",
+   "period_end": "2023-09-30",
+   "operating_cash_flow": -81109000,
+   "capex": 1072000,
+   "free_cash_flow": -82181000
+  }
+ ],
+ "balance_q": [
+  {
+   "fiscal_period": "Q1",
+   "period_end": "2026-03-31",
+   "cash_and_equivalents": 16564000,
+   "short_term_investments": null,
+   "long_term_debt": 9172000,
+   "short_term_debt": null,
+   "total_current_assets": 65170000,
+   "total_current_liabilities": 26618000,
+   "total_equity": 51540000
+  },
+  {
+   "fiscal_period": "Q1",
+   "period_end": "2025-12-31",
+   "cash_and_equivalents": 39013000,
+   "short_term_investments": null,
+   "long_term_debt": null,
+   "short_term_debt": null,
+   "total_current_assets": 80120000,
+   "total_current_liabilities": 33802000,
+   "total_equity": 38156000
+  }
+ ],
+ "insider_6m": {
+  "buy_tx": 1,
+  "sell_tx": 0,
+  "distinct_buyers": 1,
+  "buy_value": 0,
+  "sell_value": 0,
+  "recent": [
+   {
+    "transaction_date": "2026-03-04",
+    "insider_name": "Jeldi Arun",
+    "insider_title": "CEO",
+    "transaction_code": "P",
+    "shares": 5000000,
+    "total_value": null
+   }
+  ]
+ },
+ "holders_13f": {
+  "quarter_end": "2026-03-31",
+  "holders_sampled": 50,
+  "adding": 43,
+  "trimming": 5,
+  "top5": [
+   {
+    "filer_name": "AWM Investment Company, Inc.",
+    "shares": 1978282,
+    "market_value": 18576068,
+    "change_type": "decrease",
+    "change_in_shares": -174770
+   },
+   {
+    "filer_name": "VANGUARD CAPITAL MANAGEMENT LLC",
+    "shares": 908734,
+    "market_value": 8533012,
+    "change_type": "new",
+    "change_in_shares": 908734
+   },
+   {
+    "filer_name": "MILLENNIUM MANAGEMENT LLC",
+    "shares": 668061,
+    "market_value": 6273093,
+    "change_type": "new",
+    "change_in_shares": 668061
+   },
+   {
+    "filer_name": "JANE STREET GROUP, LLC",
+    "shares": 279660,
+    "market_value": 2626007,
+    "change_type": "increase",
+    "change_in_shares": 232570
+   },
+   {
+    "filer_name": "BlackRock, Inc.",
+    "shares": 260190,
+    "market_value": 2443184,
+    "change_type": "increase",
+    "change_in_shares": 125075
+   }
+  ]
+ },
+ "holders_breakdown": {
+  "insiders_pct": 0.4454089832281478,
+  "institutions_pct": 0.23062459443477773,
+  "institutions_float_pct": 0.3239664223370744,
+  "institutions_count": 63,
+  "source": "investor-db (SEC 13F + Form 4)"
+ },
+ "option_expirations": "ToolError: 2 validation errors for call[get_option_expirations]\nunderlying\n  Missing required argument [type=missing_argument, input_value={'ticker': 'VELO'}, input_type=dict]\n    For further information visit h",
+ "options": {
+  "error": "ToolError: 2 validation errors for call[get_options_chain]\nunderlying\n  Missing required argument [type=missing_argument, input_value={'ticker': 'VELO'}, input_type=dict]\n    For further information visit https:"
+ },
+ "earnings": "none",
+ "dividends": "none",
+ "vix": [
+  {
+   "series_id": "INDEX_VIX",
+   "date": "1990-01-02",
+   "value": "17.240000"
+  }
+ ]
+}

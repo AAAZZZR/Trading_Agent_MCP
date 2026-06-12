@@ -39,6 +39,7 @@ async def test_all_tools_registered() -> None:
         "list_earnings", "get_earnings_calendar",
         "get_etf_profile", "list_etf_holdings", "list_etfs_holding_ticker",
         "list_macro_series", "get_macro_series",
+        "get_market_movers", "get_ipo_calendar",
         "screen_insider_buys",
         "get_analysis", "get_objective_report", "get_overview",
         "get_options_chain", "get_option_expirations", "get_option_contract_history",
@@ -326,6 +327,32 @@ _CASES = [
         {"limit": "1", "order": "asc"},
     ),
 
+    # Market snapshot (movers / IPO calendar)
+    (
+        tools.get_market_movers,
+        "/api/market/movers",
+        {},
+        {},
+    ),
+    (
+        tools.get_market_movers,
+        "/api/market/movers",
+        {"date": "2026-06-11"},
+        {"date": "2026-06-11"},
+    ),
+    (
+        tools.get_ipo_calendar,
+        "/api/market/ipo-calendar",
+        {},
+        {},
+    ),
+    (
+        tools.get_ipo_calendar,
+        "/api/market/ipo-calendar",
+        {"from_date": "2026-06-01", "to_date": "2026-09-01"},
+        {"from_date": "2026-06-01", "to_date": "2026-09-01"},
+    ),
+
     # Screener (cross-ticker)
     (
         tools.screen_insider_buys,
@@ -423,3 +450,37 @@ async def test_tool_calls_correct_endpoint(
     assert actual_params == expected_query, (
         f"params mismatch for {tool_fn}: expected {expected_query}, got {actual_params}"
     )
+
+
+# ---- 新 market tool 的 error 路徑 -----------------------------------------
+#
+# 後端非 2xx 由 api.get 的單一咽喉點翻成 ToolError(完整翻譯規則在 test_api_client.py
+# 測過);這裡只確認兩個新 tool 確實走那條路、不外洩裸 httpx 例外。
+
+from fastmcp.exceptions import ToolError  # noqa: E402
+
+
+def _unwrap(tool_fn):
+    """@mcp.tool 可能(視 FastMCP 版本)留 `.fn` 指向底層 async function;
+    沒有就直接用本體 —— 對齊上面參數化測試的呼叫方式。"""
+    return tool_fn.fn if hasattr(tool_fn, "fn") else tool_fn
+
+
+async def test_get_market_movers_404_raises_tool_error() -> None:
+    """movers 帶了無資料的日期 → 後端 404 → ToolError(帶 status/path 前綴)。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/market/movers").respond(
+            404, json={"detail": "No market movers for date 1990-01-01."}
+        )
+        with pytest.raises(ToolError) as excinfo:
+            await _unwrap(tools.get_market_movers)(date="1990-01-01")
+    assert "404" in str(excinfo.value)
+
+
+async def test_get_ipo_calendar_500_raises_tool_error() -> None:
+    """IPO 行事曆遇上游 5xx → ToolError,不外洩裸 httpx 例外。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/market/ipo-calendar").respond(500, text="boom")
+        with pytest.raises(ToolError) as excinfo:
+            await _unwrap(tools.get_ipo_calendar)()
+    assert "500" in str(excinfo.value)

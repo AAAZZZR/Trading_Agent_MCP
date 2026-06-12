@@ -60,6 +60,10 @@ async def test_dictionary_content_anchors() -> None:
         "0-1 decimal",  # 比率非百分比
         "case-sensitive",  # macro series_id
         "eps_diluted",  # 財務關鍵欄位
+        "market_movers",  # 全市場漲跌榜 domain
+        "ipo_calendar",  # IPO 行事曆 domain
+        "delisted_at",  # 下市偵測語意(status + 日期)
+        "not-yet-priced",  # IPO 未定價 = null ≠ $0
     ):
         assert anchor in text, f"data dictionary missing anchor: {anchor!r}"
 

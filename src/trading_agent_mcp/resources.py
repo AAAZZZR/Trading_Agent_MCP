@@ -55,10 +55,16 @@ units they are in, and where they will trip you up.
 Which tools serve this domain: `list_companies`, `search_companies`, `get_company`.
 
 - Identity + classification only: `ticker`, `cik`, `name`, `sector`, `industry`, `sic_code`,
-  `exchange`, `is_active`, `first_seen`, `last_updated`. `country` is currently always null.
+  `exchange`, `is_active`, `status`, `delisted_at`, `first_seen`, `last_updated`. `country` is
+  currently always null.
 - `sector` / `industry` set the **interpretation thresholds** — a 15% margin is great for a
   retailer and weak for software. Resolve sector first, then judge everything relative to peers
   and relative to the company's own history (preferred) rather than absolute cutoffs.
+- **Delisting (`status` + `delisted_at`):** `status` is `'active'` or `'delisted'`;
+  `delisted_at` is the DATE delisting was detected (null while active). **A stock that simply
+  stopped getting fresh prices is NOT necessarily delisted — judge delisting by `status` /
+  `delisted_at`, not by a price gap.** `is_active` is just `status == 'active'` (kept for
+  backward compatibility); prefer `status` / `delisted_at` for the precise read.
 - Pitfall: `search_companies` is for "I don't know the exact ticker"; `get_company` needs the
   exact ticker and 404s otherwise.
 
@@ -271,6 +277,37 @@ Which tools serve this domain: `list_macro_series` (catalog — call first),
 - **Ordering:** `get_macro_series` returns **newest-first by default** (`order='desc'`), so
   `limit=1` gives you the latest reading (e.g. the current VIX). Pass `order='asc'` when you
   need an oldest-first time series for charting or a moving-average calculation.
+
+---
+
+## Domain: Market movers (market_movers)
+
+Which tools serve this domain: `get_market_movers`.
+
+- Source: Alpha Vantage `TOP_GAINERS_LOSERS`. One market-wide snapshot **per trading day,
+  refreshed after the close (EOD, not real-time)**, with three top-20 boards.
+- **Three `category` boards:** `gainers` (highest `change_pct` of the day), `losers` (lowest
+  `change_pct`), `most_active` (highest `volume`, regardless of direction). Each board has
+  `rank` 1-20.
+- Per-row fields: `rank`, `ticker`, `price` (USD), `change_amount` (day's price move vs the
+  prior close, USD), `change_pct`, `volume`. **`change_pct` is a percent number (5.23 = +5.23%),
+  NOT a 0-1 decimal** — do not multiply by 100 again.
+- Calling with no `date` returns the latest available trading day (the normal path); passing a
+  date with no data 404s (omit the date to get the latest).
+
+---
+
+## Domain: IPO calendar (ipo_calendar)
+
+Which tools serve this domain: `get_ipo_calendar`.
+
+- Source: Alpha Vantage `IPO_CALENDAR`, refreshed daily. One row per upcoming / recent IPO.
+- Fields: `symbol`, `ipo_date` (scheduled listing date — a **vendor estimate, can shift**),
+  `name`, `price_range_low` / `price_range_high` (offering price band, USD), `currency`
+  (ISO 4217), `exchange`.
+- **`null` (or 0) price range means not-yet-priced**, not a $0 IPO — say "not priced yet".
+- With no date arguments the tool defaults to a **today .. +90 day** window (upcoming IPOs);
+  pass `from_date` / `to_date` to widen or look back.
 
 ---
 
