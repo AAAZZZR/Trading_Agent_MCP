@@ -12,3 +12,6 @@ dist/
 build/
 
 evals/results/
+
+_*.py
+_*.json
