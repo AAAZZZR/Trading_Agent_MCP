@@ -37,7 +37,8 @@ Follow this workflow. Be conclusion-first, attach an as-of date to every number,
 missing data and EXCLUDE it from the conclusion, and never invent your own price target or
 forecast (no real-time quotes; analyst data is limited to two vendor fields —
 `estimate_eps` on the earnings calendar and `analyst_target_price` on the overview, which
-you may cite with attribution).
+you may cite with attribution). For a market-expectation read, prefer the options-implied
+move / IV over any invented target. First-party SEC data is from EDGAR, not scraped.
 
 **Step 0 — Resolve.** If the ticker is uncertain, call `search_companies` first. Then
 `get_company` for `sector` / `industry` — interpretation thresholds differ by industry.
@@ -100,10 +101,14 @@ Respond in the user's language. Produce a conclusion-first four-lens report on *
 
 Use 🟢 bullish/healthy, 🟡 neutral/watch, 🔴 bearish/risk, ⚪ data missing. Honest rules:
 a lens with no data is marked ⚪, **dropped from the denominator** (never scored 0), and you
-always state "based on N/4 lenses". No forecasts, no price target — describe the present.
+always state "based on N/4 lenses". No forecasts, no price target — describe the present. Data is
+EOD/filing-based (not real-time) — fine for fundamental/ownership/positioning; stamp each lens's
+as-of. **First-party SEC data (Form 4 / 13F / options) is the differentiated core, sourced from
+EDGAR, not scraped** — give it the most weight and visual prominence.
 
-Order of the report: Fundamentals (what is this company) -> Ownership (who is buying) ->
-Technical (price state) -> Options (market expectation), then events + macro context.
+Order: lead with the **first-party, differentiated lenses** — Ownership (who is buying: Form 4 +
+13F) -> Options (market-implied expectation) -> then Fundamentals (what is this company) ->
+Technical (price state), then events + macro context. (Price/macro are context, not the headline.)
 
 **Lens 1 — Fundamentals.** `get_income_statements` + `get_cash_flow_statements` +
 `get_balance_sheets` (quarterly, ~8) and `get_overview`. Cover: growth (revenue/EPS YoY vs the
@@ -141,7 +146,9 @@ management tone / guidance, `get_earnings_transcript` gives the latest call (pag
 or filter `speaker` to the CEO; transcript coverage skews to mid/large-cap — say so if absent).
 
 **Synthesize.** One-line overall verdict naming the strongest bullish reason + the biggest
-risk, the per-lens light row, and "based on N/4 lenses" with any ⚪ lens named.
+risk, the per-lens light row, and "based on N/4 lenses" with any ⚪ lens named. **Instead of a
+price target, cite the options-implied move / IV / skew** as the market-expectation read. Close
+with a one-line **"what would change this view"** (the catalyst or risk the thesis hinges on).
 
 **Pro-tier shortcut (optional).** If `execute_readonly_sql` is available you can aggregate
 directly instead of pulling rows. Examples:
@@ -196,7 +203,9 @@ Revenue growth (YoY) | Operating margin | P/E (forward) | PEG | FCF (latest TTM)
 Price momentum (3/6-month) | 52-week position. Put the as-of date on each cell's domain.
 
 Honesty rules: flag any missing cell as "n/a" and exclude it from the verdict; for a
-loss-making name drop P/E and compare on P/S + growth; no price targets or forecasts.
+loss-making name drop P/E and compare on P/S + growth; no price targets or forecasts (cite the
+options-implied move, not an invented target). First-party SEC data (Form 4 / 13F / options) from
+EDGAR is the differentiated core.
 
 Close with **one sentence**: who leads on which axis (growth / profitability / valuation /
 FCF / momentum) and the **shared risk** both face.
@@ -259,8 +268,12 @@ market-expectation read instead. Use tools for every number — never your memor
   >=3 distinct insiders buying within ~90 days, C-suite weighted, NOT A/M/G/F codes) +
   `list_13f_top_buyers` / `list_13f_top_sellers` / `list_13f_holders` (new / exit / big deltas;
   **annotate the ~45-day 13F filing lag** — stamp quarter-end vs filing date).
-- Options: `get_option_expirations` + `get_options_chain` — put/call ratio, ATM IV, 25-delta
-  **skew** as an EOD positioning read (cast JSON-string numbers to float; skip illiquid contracts).
+- Options (build the FULL analytics, not one put/call line): `get_option_expirations` +
+  `get_options_chain`. Compute the **ATM IV term structure** (ATM = |delta|≈0.5 call, one point per
+  expiry across ALL expiries), pull ONE ~30-45 DTE expiry's full strike ladder for the **IV skew
+  curve** and the **open-interest-by-strike** chart, P/C (volume & OI), IV rank, **max pain**
+  (argmin over strikes of total option payout), and **expected move** = price × ATM_IV × √(DTE/365).
+  Cast JSON-string numbers to float; skip illiquid contracts.
 - Fundamentals: `get_overview` + `get_income_statements` / `get_balance_sheets` /
   `get_cash_flow_statements` (quarterly, ~8) — revenue & EPS YoY vs the same quarter last year,
   margin trend, net debt, FCF (`operating_cash_flow - |capex|` when null); **TTM = sum of the 4
@@ -270,6 +283,12 @@ market-expectation read instead. Use tools for every number — never your memor
 - Events: `list_earnings` (next report date — flag if imminent) + `list_dividends`. See
   `data://dictionary` for field semantics; `get_objective_report` bundles much of this in one call;
   pro tier can aggregate with `execute_readonly_sql`.
+- Valuation (FULL set, never one or two): from `get_overview` take P/E, forward_pe, peg, P/S, P/B,
+  ev_to_ebitda; and **compute** EV = market cap + total debt − cash, EV/Sales = EV / TTM revenue,
+  P/FCF + FCF yield. Loss-makers → P/E & EV/EBITDA "N/M", lead P/S + EV/Sales + a Rule-of-40 line.
+- Short interest & float (use your **web search** if available, else mark "not available"): shares
+  outstanding, float (+ % of shares), % insiders, % institutions, short shares (+ prior period),
+  short % of float, days-to-cover; cross-check the insider/institution % against first-party Form 4 / 13F.
 
 **Step 2 — Web news overlay.** If you have **web search** / fetch tools, search: recent news +
 the cause of any large price move, latest earnings + management guidance, capital-structure events
@@ -279,13 +298,18 @@ fall back to the `get_company_news` MCP tool and **state in the report that live
 omitted**. Keep web news in its own clearly-labelled section so it never contaminates the cited
 first-party core.
 
-**Step 3 — Render the HTML.** Read the **`data://report-template`** resource, copy its `<style>`
-verbatim, and assemble the body from its component patterns with your real values. Output ONE
-**self-contained** HTML document (inline CSS, no external assets by default). Order: verdict card
-(overall traffic light + "based on N/4 lenses", one sentence: strongest bull reason + biggest risk)
--> lens lights -> KPI dashboard -> Insider -> Institutional -> Options -> Financials -> Technical ->
-events -> Recent news (web, separate section) -> Sources & freshness -> disclaimer. Put numbers in
-monospace; pair every traffic-light color with a word (color is never the only signal). Before
-emitting, self-check: every claim traces to a number shown on the page, no lens is scored without
-data, no invented target.{peer_line}
+**Step 3 — Render the HTML.** Read the **`data://report-template`** resource, copy its `<style>` and
+its Chart.js setup verbatim, and assemble the body from its component patterns with your real values.
+Output ONE **self-contained** HTML document (inline CSS/JS; Chart.js 4.4.7 via CDN is the only
+external dep). **Charts are mandatory** (a wall of text is a failure): (1) price + MA50 + MA200 +
+volume; (2) IV term structure; (3) IV skew curve; (4) open-interest by strike; (5) ownership trend.
+**Each section is a FULL block**, not one line: a complete valuation table, a short-interest & float
+block + squeeze checklist, and the options-analytics table (term/skew/OI/max-pain/expected-move).
+Order: verdict card (overall traffic light + "based on N/4 lenses", one sentence: strongest bull
+reason + biggest risk) -> lens lights -> KPI dashboard -> price+MA+volume chart -> Insider ->
+Institutional (+ ownership-trend chart) -> Options (3 charts + analytics table) -> Financials (trend
+table) -> Valuation table -> Short-interest & float -> Technical -> events -> Recent news (web,
+separate) -> Sources & freshness -> disclaimer. Numbers in monospace; pair every traffic-light color
+with a word. Before emitting, self-check: every claim traces to a number shown on the page, no lens
+is scored without data, no invented target, and the 5 charts are present.{peer_line}
 """

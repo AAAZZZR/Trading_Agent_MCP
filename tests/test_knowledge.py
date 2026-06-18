@@ -147,6 +147,10 @@ async def test_report_template_content_anchors() -> None:
         "🟢",  # 紅綠燈(顏色不單獨表意,配 emoji/字)
         "Not investment advice",  # 免責
         "As of",  # as-of 新鮮度戳記
+        "Chart.defaults",  # Chart.js 設定(圖表為必要)
+        "priceChart",  # 價格+均線+量趨勢圖
+        "Short-interest",  # 空單/float 深度區塊
+        "Max pain",  # 期權 max pain
     ):
         assert anchor in text, f"report-template missing anchor: {anchor!r}"
 
@@ -169,6 +173,10 @@ async def test_build_stock_report_prompt_content() -> None:
         "web search",  # web 新聞 overlay(有 web 工具)
         "get_company_news",  # 無 web 工具的退路
         "EDGAR",  # 第一手出處宣告
+        "term structure",  # 期權深度:IV 期限結構
+        "max pain",  # 期權深度:max pain
+        "expected move",  # 期權深度:隱含波動
+        "Charts are mandatory",  # 圖表為必要(非一面文字)
     ):
         assert anchor in text, f"build_stock_report missing anchor: {anchor!r}"
 
