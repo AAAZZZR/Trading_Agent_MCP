@@ -70,8 +70,10 @@ mcp = FastMCP(
         "選工具:不知道精確 ticker 用 search_companies;要快速結論用 get_analysis,要自己分析的原料用 "
         "get_objective_report;查 macro 觀測值前先用 list_macro_series 拿 series_id 與單位;"
         "要彈性 / 統計查詢用 execute_readonly_sql,下手前先用 describe_table 看欄位(兩者需 pro tier)。\n"
-        "另有資料字典 resource(data://dictionary,各表單位 / 調整 / 代碼 / 滯後語意)與分析 prompts"
-        "(analyze_stock / analyze_stock_full / compare_stocks);引用數字或做分析前可先讀。"
+        "另有資料字典 resource(data://dictionary,各表單位 / 調整 / 代碼 / 滯後語意)、HTML 報告模板 "
+        "resource(data://report-template)與分析 prompts(analyze_stock / analyze_stock_full / "
+        "compare_stocks / build_stock_report——產單一自包含 HTML 個股報告,第一手 SEC 資料為招牌、"
+        "搭配 agent 自己的 web 新聞、報告語言隨使用者);引用數字或做分析前可先讀。"
     ),
     auth=_build_auth(),
 )

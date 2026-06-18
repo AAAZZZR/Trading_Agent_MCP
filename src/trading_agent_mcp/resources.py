@@ -474,3 +474,202 @@ def analysis_playbook() -> str:
     events -> Step 5 synthesize, with the dataset's honesty rules baked in.
     """
     return _ANALYSIS_PLAYBOOK
+
+
+# ============================================================
+# data://report-template —— self-contained HTML report design system
+# ============================================================
+# 給 build_stock_report prompt 用。一份「設計系統 + 組裝指南」(非死板填空模板),
+# 讓 agent 用真實數字組出單一自包含 HTML(預設零外部依賴)。版型/配色蒸餾自
+# 三隻研究 agent 的結論(InvestSkill 配方、sell-side note 結構、可及性與第一手
+# 資料 moat 框架)與本專案既有的紅綠燈方法論。維護時與 build_stock_report 一起改。
+
+_REPORT_TEMPLATE = """\
+# investor-db HTML Stock-Report Template
+
+A self-contained HTML **design system** for the `build_stock_report` workflow. Do NOT treat it
+as fill-in-the-blanks: copy the `<style>` block verbatim, then assemble the body from the
+component patterns using REAL values you fetched from the tools. Output **one self-contained
+`.html` file** — inline CSS, no build step, **no external assets by default** (works offline).
+
+## Output rules (load-bearing)
+
+- **Conclusion-first:** the verdict card is the first thing in the body.
+- **Numbers in monospace:** every figure sits in a `.num` span (JetBrains Mono) for alignment.
+- **Color is never the only signal:** every 🟢🟡🔴⚪ pairs an emoji/word with the CSS color
+  (colorblind- and grayscale/print-safe; keep WCAG 4.5:1 contrast).
+- **As-of on everything:** put `As of <date>` on each data block; never blend freshness silently.
+- **First-party data is the hero:** order the lens panels Insider -> Institutional -> Options ->
+  Financials; prices/macro are supporting context, not the headline.
+- **Missing lens -> ⚪, dropped from the denominator,** and the verdict states "based on N/4 lenses".
+- **No invented price target / no forecast.** Use the options-implied move / IV / skew as the
+  honest market-expectation read instead.
+- Charts: prefer inline SVG sparklines / CSS bars (keeps the file dependency-free). Chart.js
+  4.4.0 via CDN is an OPTIONAL upgrade only — never required.
+
+## 1. Page skeleton (copy verbatim; fill {{...}})
+
+```html
+<!DOCTYPE html>
+<html lang="{{LANG}}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TICKER}} — Stock Report</title>
+<!-- OPTIONAL web fonts (omit for a fully offline file; system fonts are the fallback): -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0;
+    --green:#16a34a; --green-bg:#dcfce7; --amber:#d97706; --amber-bg:#fef3c7;
+    --red:#dc2626; --red-bg:#fee2e2; --gray:#94a3b8; --gray-bg:#f1f5f9;
+    --accent:#3949ab; --accent-soft:#eef1fb;
+    --sans:"Inter",-apple-system,"Segoe UI",system-ui,"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6;font-size:15px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px 80px}
+  header{background:linear-gradient(135deg,#1a237e 0%,#3949ab 55%,#5c6bc0 100%);color:#fff;padding:34px 0 26px;margin-bottom:24px}
+  header .wrap{padding-top:0;padding-bottom:0}
+  h1{margin:0 0 6px;font-size:26px;letter-spacing:-.4px}
+  .asof{display:inline-block;margin-top:8px;font-family:var(--mono);font-size:12px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25);border-radius:7px;padding:5px 10px}
+  .prov{opacity:.9;font-size:12.5px;margin-top:8px;max-width:760px}
+  h2{font-size:20px;margin:32px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+  .num{font-family:var(--mono)}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  .dot{display:inline-block;width:11px;height:11px;border-radius:50%;vertical-align:middle;margin-right:5px}
+  .g{background:var(--green)} .y{background:var(--amber)} .r{background:var(--red)} .w{background:var(--gray)}
+  /* BLUF verdict card */
+  .verdict{border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:18px 0;box-shadow:0 1px 3px rgba(15,23,42,.05)}
+  .verdict.vg{background:var(--green-bg)} .verdict.vy{background:var(--amber-bg)} .verdict.vr{background:var(--red-bg)}
+  .verdict .head{font-weight:700;font-size:17px;display:block;margin-bottom:4px}
+  .lights{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  .light{font-size:12.5px;font-family:var(--mono);padding:4px 10px;border-radius:7px;border:1px solid var(--line);background:#fff}
+  /* KPI dashboard */
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
+  .k{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+  .k .lab{font-size:11px;color:var(--muted);display:block}
+  .k .val{font-family:var(--mono);font-size:16px;font-weight:600;margin-top:2px}
+  .k .val.g{color:var(--green)} .k .val.r{color:var(--red)} .k .val.y{color:var(--amber)}
+  /* lens / aspect block */
+  .aspect{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:12px 0}
+  .aspect .t{font-weight:700;font-size:15px;margin-bottom:4px}
+  .aspect ul{margin:6px 0 0;padding-left:20px} .aspect li{margin:3px 0}
+  /* callouts */
+  .warn{background:#fff7ed;border:1px solid #fed7aa;border-radius:9px;padding:9px 13px;font-size:13px;margin:9px 0;color:#9a3412}
+  .intro{background:var(--accent-soft);border:1px solid #d7ddf5;border-left:4px solid var(--accent);border-radius:10px;padding:12px 16px}
+  /* comparison table (peers) */
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px;background:var(--card);border-radius:12px;overflow:hidden;border:1px solid var(--line)}
+  th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--accent);color:#fff;font-weight:600} tr:last-child td{border-bottom:none}
+  td:first-child{font-weight:600;color:#334155;white-space:nowrap}
+  .cmp td:nth-child(2){background:#fffbeb} .cmp td:nth-child(3){background:#f0fdf4}
+  /* sources + disclaimer */
+  .sources{font-size:12.5px;line-height:2}
+  .disc{font-size:12px;color:var(--muted);margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
+  @media(max-width:720px){.kpi{grid-template-columns:repeat(2,1fr)}h1{font-size:21px}}
+  @media print{body{background:#fff}header,.verdict.vg,.verdict.vy,.verdict.vr,.k,th,.cmp td,.warn,.intro{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+  <header><div class="wrap">
+    <h1>{{TICKER}} — {{COMPANY NAME}}</h1>
+    <div>{{exchange}} · {{sector}} · {{currency}} · mkt cap {{$X.XB}}</div>
+    <span class="asof">As of {{EOD date}} · EOD/filing-based — built for fundamental, ownership &amp; positioning analysis (multi-day to multi-quarter), not a real-time / intraday execution tool</span>
+    <div class="prov">Sourced &amp; normalized directly from SEC EDGAR filings + primary feeds — not scraped or aggregated.</div>
+  </div></header>
+  <div class="wrap">
+    <!-- body assembled from the patterns below -->
+  </div>
+</body>
+</html>
+```
+
+## 2. Component patterns (fill with real values)
+
+**Verdict card (BLUF, first in body)** — pick `vg`/`vy`/`vr` by overall light:
+```html
+<div class="verdict vy">
+  <span class="head"><span class="dot y"></span>🟡 Neutral-bullish · based on 4/4 lenses</span>
+  One sentence: strongest bullish reason + biggest risk. No price target.
+</div>
+<div class="lights">
+  <span class="light"><span class="dot g"></span>Fundamentals · bullish</span>
+  <span class="light"><span class="dot y"></span>Ownership · mixed</span>
+  <span class="light"><span class="dot g"></span>Technical · bullish</span>
+  <span class="light"><span class="dot w"></span>Options · ⚪ no data (dropped from denominator)</span>
+</div>
+```
+Per-lens signal = bullish / neutral / bearish (+ a confidence word). **No Buy/Sell action.**
+
+**KPI dashboard** (numbers in `.num`/mono; color the `.val` by read):
+```html
+<div class="kpi">
+  <div class="k"><span class="lab">Price (As of {{date}})</span><span class="val">{{$167.34}}</span></div>
+  <div class="k"><span class="lab">6M return</span><span class="val g">{{+460%}}</span></div>
+  <div class="k"><span class="lab">Fwd P/E</span><span class="val r">{{84}}</span></div>
+  <div class="k"><span class="lab">Next earnings</span><span class="val">{{8/6}}</span></div>
+</div>
+```
+
+**Lens block** (🟢🟡🔴⚪ dot + label; Insider/Institutional/Options are the hero panels):
+```html
+<div class="aspect">
+  <div class="t"><span class="dot g"></span>Ownership — Insider (Form 4) &amp; Institutional (13F)</div>
+  <ul>
+    <li>Cluster buying: {{N}} distinct insiders incl. {{CEO/CFO}} bought within ~90d (P only). As of {{Form 4 disclosed date}}.</li>
+    <li>13F: adders {{vs}} trimmers, net {{+X.XM}} shares, {{new/exit}} positions. As of {{quarter-end}}, filed up to ~45-day lag.</li>
+  </ul>
+</div>
+```
+Options lens: lead with IV rank / 25-delta **skew** / put-call / max pain as an EOD positioning read.
+
+**Caveat / data-gap box:**
+```html
+<div class="warn">⚠️ {{e.g. DB shows quarter-end cash; verify post-quarter raises via web before any runway claim.}}</div>
+```
+
+**Comparison table (only when peers given)** — col 2/3 auto-tint per ticker:
+```html
+<table class="cmp"><tr><th>Axis</th><th>{{TICKER_A}}</th><th>{{TICKER_B}}</th></tr>
+  <tr><td>Revenue YoY</td><td class="num">{{+132%}}</td><td class="num">{{+26%}}</td></tr>
+</table>
+```
+
+**Recent news (web overlay — keep SEPARATE from the cited first-party core):**
+```html
+<h2>Recent news (web; may post-date our EOD data)</h2>
+<div class="intro">Each item: headline — source, date, one-line sentiment, link. Used to verify
+DB anomalies (cash runway, anomalous Form 4, missing earnings date). Not part of the lens scoring.</div>
+```
+
+**Sources + freshness + disclaimer (footer):**
+```html
+<h2>Sources &amp; freshness</h2>
+<div class="sources">Price as-of {{date}} (T+1 EOD) · financials {{last filing}} · 13F {{quarter-end}} (~45-day lag) · options {{EOD date}}. First-party from SEC EDGAR; valuation/prices via Alpha Vantage.</div>
+<div class="disc">For informational/research purposes only. <b>Not investment advice.</b> Data is end-of-day and filing-based, not real-time; past performance is not indicative of future results.</div>
+```
+
+## 3. Assembly order
+
+header → verdict card → lights row → KPI dashboard → **Insider → Institutional → Options →
+Financials** lenses → Technical/price context → events (next earnings, dividends) → Recent news
+(web overlay, separate) → Sources &amp; freshness → disclaimer. Keep top-3 risks inline; push
+minor detail to an appendix. Every claim must trace to a number shown on the page.
+"""
+
+
+@mcp.resource("data://report-template")
+def report_template() -> str:
+    """Self-contained HTML design system + assembly guide for the stock report.
+
+    Used by the `build_stock_report` prompt. Copy the `<style>` verbatim and assemble the body
+    from the documented component patterns with real values: BLUF verdict card, traffic-light
+    lens row, KPI dashboard, first-party hero lens blocks (Form 4 / 13F / options), comparison
+    table, a separated web-news section, and a sources/disclaimer footer. Inter + JetBrains Mono
+    (numbers in mono), cobalt theme, colorblind/print-safe, mobile + print CSS, zero external
+    dependencies by default (Chart.js optional).
+    """
+    return _REPORT_TEMPLATE

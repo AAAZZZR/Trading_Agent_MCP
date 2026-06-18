@@ -201,3 +201,91 @@ loss-making name drop P/E and compare on P/S + growth; no price targets or forec
 Close with **one sentence**: who leads on which axis (growth / profitability / valuation /
 FCF / momentum) and the **shared risk** both face.
 """
+
+
+# ============================================================
+# build_stock_report —— self-contained HTML report (four-lens + web overlay)
+# ============================================================
+# 把 analyze_stock_full 的四面向方法論帶進 HTML 輸出,並新增兩件事:
+#   (1) 一等的 web 新聞 overlay(用 agent 自己的 web search,無則退回 get_company_news),
+#   (2) 用 data://report-template resource render 成單一自包含 HTML。
+# 第一手資料(Form 4 / 13F / 期權 greeks)當招牌面板、誠實標 as-of、非實時定位、
+# 不臆造目標價(改用期權隱含/skew)—— 蒸餾自 2026-06-19 的三隻研究 agent + SKILL.md。
+# 維護時與 resources.py 的 data://report-template 一起改。
+
+
+@mcp.prompt
+def build_stock_report(
+    ticker: str, peers: str = "", language: str = "the user's language"
+) -> str:
+    """Build a polished, self-contained HTML stock report (four lenses + web-news overlay).
+
+    Gathers real numbers via the tools, layers in the latest news via the agent's own web search
+    (falling back to `get_company_news`), and renders one self-contained HTML file using the
+    `data://report-template` design system. First-party SEC data (Form 4 cluster buying, 13F
+    flows, full options greeks) is the hero; honesty rules carried (as-of stamps, missing lens
+    dropped from the denominator -> "based on N/4", no invented price target — options-implied
+    move/skew instead); EOD/filing-based scope stated up front. Pass `peers` (comma-separated)
+    to also emit a head-to-head comparison. Final report renders in the user's language.
+
+    Args:
+        ticker: US stock symbol, e.g. AAPL.
+        peers: Optional comma-separated peer tickers for a head-to-head comparison, e.g. "MSFT,GOOGL".
+        language: Output language for the report (defaults to the user's language).
+    """
+    peer_line = ""
+    if peers.strip():
+        peer_line = (
+            f"\n\n**Comparison mode.** Peers: {peers}. Run the same tool reads for each peer, then add "
+            "a head-to-head **comparison** section: one verdict card per ticker plus a `.cmp` comparison "
+            "table (revenue YoY, operating margin, forward P/E, FCF, 3/6-month momentum, 52-week position), "
+            "and close with who leads on which axis + the shared risk both face."
+        )
+    return f"""\
+Respond in {language}. Build a polished, **self-contained HTML** stock report for **{ticker}**.
+
+This dataset is **EOD and filing-based — not real-time**: it is built for fundamental, ownership,
+and positioning analysis (multi-day to multi-quarter horizon), NOT intraday execution / day
+trading. State that scope once near the top, stamp every data block with its **as-of** date, and
+lead with a provenance line — data is sourced and normalized directly from **SEC EDGAR** filings +
+primary feeds, not scraped. Honesty rules throughout: every number carries an as-of date; missing
+data is marked with a white circle and **dropped from the denominator** (say "based on N/4 lenses");
+**never invent a price target or forecast** — use the options-implied move / IV / **skew** as the
+market-expectation read instead. Use tools for every number — never your memory (it is stale).
+
+**Step 1 — Gather real numbers (call the tools).** Resolve with `search_companies` / `get_company`
+(sector sets the interpretation thresholds). Then the four lenses, **first-party panels first**:
+- Ownership (the hero): `list_insider_trades` (only `transaction_code` P/S; **cluster buying** =
+  >=3 distinct insiders buying within ~90 days, C-suite weighted, NOT A/M/G/F codes) +
+  `list_13f_top_buyers` / `list_13f_top_sellers` / `list_13f_holders` (new / exit / big deltas;
+  **annotate the ~45-day 13F filing lag** — stamp quarter-end vs filing date).
+- Options: `get_option_expirations` + `get_options_chain` — put/call ratio, ATM IV, 25-delta
+  **skew** as an EOD positioning read (cast JSON-string numbers to float; skip illiquid contracts).
+- Fundamentals: `get_overview` + `get_income_statements` / `get_balance_sheets` /
+  `get_cash_flow_statements` (quarterly, ~8) — revenue & EPS YoY vs the same quarter last year,
+  margin trend, net debt, FCF (`operating_cash_flow - |capex|` when null); **TTM = sum of the 4
+  latest quarter rows, never an FY row**; loss-makers drop P/E (label "N/A (loss)").
+- Technical: ONE `list_daily_prices` (~1y) -> close vs 50/200-day MA, 52-week position, 1/3/6-month
+  momentum, volume vs ~50-day average. `get_overview` `beta` for volatility.
+- Events: `list_earnings` (next report date — flag if imminent) + `list_dividends`. See
+  `data://dictionary` for field semantics; `get_objective_report` bundles much of this in one call;
+  pro tier can aggregate with `execute_readonly_sql`.
+
+**Step 2 — Web news overlay.** If you have **web search** / fetch tools, search: recent news +
+the cause of any large price move, latest earnings + management guidance, capital-structure events
+(offering / convertible / going-concern), and **verify each DB anomaly** (quarter-end cash runway,
+anomalous Form 4, missing earnings date) — each item with source + date. If you have NO web tools,
+fall back to the `get_company_news` MCP tool and **state in the report that live web news was
+omitted**. Keep web news in its own clearly-labelled section so it never contaminates the cited
+first-party core.
+
+**Step 3 — Render the HTML.** Read the **`data://report-template`** resource, copy its `<style>`
+verbatim, and assemble the body from its component patterns with your real values. Output ONE
+**self-contained** HTML document (inline CSS, no external assets by default). Order: verdict card
+(overall traffic light + "based on N/4 lenses", one sentence: strongest bull reason + biggest risk)
+-> lens lights -> KPI dashboard -> Insider -> Institutional -> Options -> Financials -> Technical ->
+events -> Recent news (web, separate section) -> Sources & freshness -> disclaimer. Put numbers in
+monospace; pair every traffic-light color with a word (color is never the only signal). Before
+emitting, self-check: every claim traces to a number shown on the page, no lens is scored without
+data, no invented target.{peer_line}
+"""

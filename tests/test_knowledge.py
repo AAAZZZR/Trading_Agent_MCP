@@ -114,3 +114,67 @@ async def test_compare_stocks_prompt_content() -> None:
     assert "KO" in text and "PEP" in text
     for anchor in ("comparison table", "shared risk", "YoY"):
         assert anchor in text, f"compare_stocks missing anchor: {anchor!r}"
+
+
+# ---- build_stock_report prompt + report-template resource (HTML report skill) ----
+
+
+async def test_report_template_resource_registered() -> None:
+    """HTML 報告模板 resource 有註冊。"""
+    registered = await mcp.list_resources()
+    uris = {str(r.uri) for r in registered}
+    assert "data://report-template" in uris, "missing data://report-template resource"
+
+
+async def test_build_stock_report_prompt_registered() -> None:
+    """build_stock_report prompt 有註冊。"""
+    registered = await mcp.list_prompts()
+    names = {p.name for p in registered}
+    assert "build_stock_report" in names, "missing build_stock_report prompt"
+
+
+async def test_report_template_content_anchors() -> None:
+    """模板含 self-contained HTML 骨架、雙字體、紅綠燈、列印與免責錨點。"""
+    text = await _read_resource_text("data://report-template")
+    for anchor in (
+        "<style",  # 內嵌 CSS,自包含單檔
+        "Inter",  # 敘述字體
+        "JetBrains Mono",  # 數字等寬字體
+        "verdict",  # BLUF 裁決卡 class
+        "kpi",  # KPI 儀表板 class
+        "cmp",  # 對照表 class
+        "@media print",  # 列印樣式
+        "🟢",  # 紅綠燈(顏色不單獨表意,配 emoji/字)
+        "Not investment advice",  # 免責
+        "As of",  # as-of 新鮮度戳記
+    ):
+        assert anchor in text, f"report-template missing anchor: {anchor!r}"
+
+
+async def test_build_stock_report_prompt_content() -> None:
+    """單檔模式:語言行 + ticker + HTML/模板指示 + 第一手招牌面板 + 誠實/新鮮度 + web overlay 雙分支。"""
+    text = await _render_prompt_text("build_stock_report", {"ticker": "TSLA"})
+    assert text.splitlines()[0].startswith("Respond in")
+    assert "TSLA" in text
+    for anchor in (
+        "data://report-template",  # 讀模板 resource
+        "self-contained",  # 單一自包含 HTML
+        "N/4",  # 缺面向剔除分母
+        "45-day",  # 13F 滯後
+        "cluster buying",  # 內部人招牌面板
+        "skew",  # 期權部位 / 隱含預期取代臆造目標價
+        "as-of",  # 每塊資料標 as-of 新鮮度
+        "real-time",  # 非實時定位(deliberate scope)
+        "EOD",  # EOD / 申報為準
+        "web search",  # web 新聞 overlay(有 web 工具)
+        "get_company_news",  # 無 web 工具的退路
+        "EDGAR",  # 第一手出處宣告
+    ):
+        assert anchor in text, f"build_stock_report missing anchor: {anchor!r}"
+
+
+async def test_build_stock_report_peers_comparison() -> None:
+    """peers 非空 → 切換對照版,兩 ticker 都帶入 + 對照表指示。"""
+    text = await _render_prompt_text("build_stock_report", {"ticker": "AAOI", "peers": "COHR"})
+    assert "AAOI" in text and "COHR" in text
+    assert "comparison" in text.lower(), "peer mode should instruct a comparison layout"
