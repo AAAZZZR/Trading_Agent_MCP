@@ -1233,8 +1233,9 @@ async def get_overview(ticker: str) -> dict[str, Any]:
         ticker: 美股代號(自動轉大寫)。不知道精確 ticker 先用 search_companies。
 
     Returns:
-        dict。金額(USD 整數,nullable):market_cap, shares_outstanding, ebitda, revenue_ttm,
-        gross_profit_ttm。估值比率(float):pe_ratio, forward_pe, peg_ratio, price_to_book,
+        dict。金額(USD 整數,nullable):market_cap, shares_outstanding, float_shares,
+        free_float_market_cap, ebitda, revenue_ttm, gross_profit_ttm。估值比率(float):
+        float_pct(自由流通占比 0-1), pe_ratio, forward_pe, peg_ratio, price_to_book,
         price_to_sales_ttm, ev_to_ebitda, ev_to_revenue。每股:eps, diluted_eps_ttm, book_value。
         配息:dividend_per_share, dividend_yield(**0-1 小數**,非百分比)。獲利能力(皆 **0-1
         小數**):profit_margin, operating_margin_ttm, return_on_assets_ttm, return_on_equity_ttm。

@@ -133,10 +133,11 @@ Which tools serve this domain: `get_overview` (and the bundled `get_objective_re
   (latest `close` x `shares_diluted`), refreshed daily ~16:00 UTC.
 - **`market_cap` covers ~7k of ~20k tickers. Missing = not-covered, NOT zero.** Never treat a
   null market cap as a tiny / zero-cap company.
-- Absolute USD (nullable): `market_cap`, `shares_outstanding`, `ebitda`, `revenue_ttm`,
-  `gross_profit_ttm`. Ratios (float): `pe_ratio`, `forward_pe`, `peg_ratio`, `price_to_book`,
-  `price_to_sales_ttm`, `ev_to_ebitda`, `ev_to_revenue`. Per-share: `eps`, `diluted_eps_ttm`,
-  `book_value`.
+- Absolute USD (nullable): `market_cap`, `shares_outstanding`, `float_shares`,
+  `free_float_market_cap`, `ebitda`, `revenue_ttm`, `gross_profit_ttm`. Ratios (float):
+  `float_pct` (free-float fraction, 0-1), `pe_ratio`, `forward_pe`, `peg_ratio`,
+  `price_to_book`, `price_to_sales_ttm`, `ev_to_ebitda`, `ev_to_revenue`. Per-share: `eps`,
+  `diluted_eps_ttm`, `book_value`.
 - **Decimals-not-percent fields:** `dividend_yield`, `profit_margin`, `operating_margin_ttm`,
   `return_on_assets_ttm`, `return_on_equity_ttm` are **0-1 decimals** — multiply by 100 for a
   percent (0.073 = 7.3%).
