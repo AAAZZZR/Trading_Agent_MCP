@@ -138,9 +138,9 @@ Which tools serve this domain: `get_overview` (and the bundled `get_objective_re
   `float_pct` (free-float fraction, 0-1), `pe_ratio`, `forward_pe`, `peg_ratio`,
   `price_to_book`, `price_to_sales_ttm`, `ev_to_ebitda`, `ev_to_revenue`. Per-share: `eps`,
   `diluted_eps_ttm`, `book_value`.
-- **Decimals-not-percent fields:** `dividend_yield`, `profit_margin`, `operating_margin_ttm`,
-  `return_on_assets_ttm`, `return_on_equity_ttm` are **0-1 decimals** — multiply by 100 for a
-  percent (0.073 = 7.3%).
+- **Decimals-not-percent fields:** `float_pct`, `dividend_yield`, `profit_margin`,
+  `operating_margin_ttm`, `return_on_assets_ttm`, `return_on_equity_ttm` are **0-1 decimals** —
+  multiply by 100 for a percent (0.073 = 7.3%; float_pct 0.75 = 75% of shares freely traded).
 - Technicals: `beta`, `week_52_high`, `week_52_low`, `ma_50`, `ma_200`. `forward_pe <
   pe_ratio` implies the market prices in earnings growth.
 - Pitfall: `get_overview` 404s for a ticker the overview ETL has not covered yet — that is
@@ -412,7 +412,8 @@ invoke MCP prompts. Respond in the user's language.
 - Missing data is flagged and **excluded from the conclusion**, never guessed or zero-filled.
 - **No real-time quotes; analyst data limited to two vendor fields** (`estimate_eps` on the
   earnings calendar, `analyst_target_price` on the overview — cite with attribution): describe
-  the current state, never invent your own price target or forecast.
+  the current state, never invent your own price target or forecast. For a market-expectation
+  read, prefer the options-implied move / IV. First-party SEC data is from EDGAR, not scraped.
 - Prefer "relative to its own history" over absolute thresholds; thresholds vary by sector.
 - For a loss-making company, drop P/E (label "N/A (loss)") and use P/S, EV/EBITDA, growth.
 
@@ -505,8 +506,18 @@ component patterns using REAL values you fetched from the tools. Output **one se
 - **Missing lens -> ⚪, dropped from the denominator,** and the verdict states "based on N/4 lenses".
 - **No invented price target / no forecast.** Use the options-implied move / IV / skew as the
   honest market-expectation read instead.
-- Charts: prefer inline SVG sparklines / CSS bars (keeps the file dependency-free). Chart.js
-  4.4.0 via CDN is an OPTIONAL upgrade only — never required.
+- **Charts are EXPECTED, not optional** (a wall of text is a failure). Minimum set: (1) price +
+  MA50 + MA200 + volume trend; (2) options IV term-structure; (3) IV skew curve; (4) open-interest
+  by strike (calls vs puts); (5) ownership trend (13F holders + insider net). Render with
+  **Chart.js 4.4.7 via CDN** (the one allowed external dep); inline-SVG sparklines need no dep. See §1b.
+- **Depth is EXPECTED per section** (a thin draft is the #1 failure mode): a FULL valuation table
+  (P/E, fwd P/E, P/S, EV/Sales, EV/EBITDA, P/B, PEG, P/FCF + FCF yield, div yield, analyst target),
+  a SHORT-INTEREST & FLOAT block (shares out, float, % insiders, % institutions, short shares,
+  short % of float, days-to-cover, trend) + a squeeze checklist, and an OPTIONS-ANALYTICS block
+  (term structure, IV rank, skew, OI/volume by strike, max pain, expected move). See §3.
+- **Compute, don't omit:** EV = mkt cap + total debt − cash; EV/Sales = EV / TTM revenue; max pain
+  = argmin over strikes of total option payout; expected move ≈ price × ATM_IV × √(DTE/365).
+  Loss-makers: P/E & EV/EBITDA → "N/M", lead with P/S + EV/Sales + a Rule-of-40 line.
 
 ## 1. Page skeleton (copy verbatim; fill {{...}})
 
@@ -517,6 +528,8 @@ component patterns using REAL values you fetched from the tools. Output **one se
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{TICKER}} — Stock Report</title>
+<!-- Charts: the one allowed external dependency (UMD build auto-registers everything). -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.js"></script>
 <!-- OPTIONAL web fonts (omit for a fully offline file; system fonts are the fallback): -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -567,6 +580,14 @@ component patterns using REAL values you fetched from the tools. Output **one se
   th{background:var(--accent);color:#fff;font-weight:600} tr:last-child td{border-bottom:none}
   td:first-child{font-weight:600;color:#334155;white-space:nowrap}
   .cmp td:nth-child(2){background:#fffbeb} .cmp td:nth-child(3){background:#f0fdf4}
+  .rt{text-align:right;font-variant-numeric:tabular-nums}
+  /* charts + layout */
+  .chart-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px 18px;margin:14px 0}
+  .chart-card h3{font:600 14px/1.3 var(--sans);margin:0 0 10px}
+  .chart-wrap{position:relative;width:100%;height:300px} .chart-wrap.tall{height:380px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .chk{font-family:var(--mono);font-size:13px;line-height:1.9}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
   /* sources + disclaimer */
   .sources{font-size:12.5px;line-height:2}
   .disc{font-size:12px;color:var(--muted);margin-top:22px;border-top:1px solid var(--line);padding-top:14px}
@@ -587,6 +608,39 @@ component patterns using REAL values you fetched from the tools. Output **one se
 </body>
 </html>
 ```
+
+## 1b. Charts (Chart.js 4.4.7 — the one allowed CDN dep)
+
+Set defaults once, then drop a `<canvas>` inside a `.chart-wrap` per chart; data is inlined as JS
+arrays. `animation:false` + `devicePixelRatio:2` make them print cleanly. The price chart is the
+full pattern; the other four follow the same shape (dual-axis / line / diverging bar).
+
+```html
+<script>
+Chart.defaults.font.family="'Inter',system-ui,sans-serif";Chart.defaults.color="#475569";
+Chart.defaults.animation=false;Chart.defaults.devicePixelRatio=2;Chart.defaults.maintainAspectRatio=false;
+const GRID="rgba(15,23,42,.07)",BLUE="#3949ab",AMBER="#d97706",VIOLET="#7c3aed",GREEN="#16a34a",RED="#dc2626",CYAN="#0891b2";
+function mk(id,cfg){const e=document.getElementById(id);if(e)try{new Chart(e,cfg)}catch(x){e.outerHTML='<p>chart error</p>'}}
+
+// 1) PRICE + MA50 + MA200 + VOLUME — dual axis; vol bars behind (order:3), vol axis squashed low.
+mk('priceChart',{type:'line',data:{labels:DATES,datasets:[
+ {type:'bar',label:'Vol',data:VOL,yAxisID:'yV',backgroundColor:'rgba(57,73,171,.18)',order:3},
+ {label:'Close',data:CLOSE,borderColor:BLUE,borderWidth:1.8,pointRadius:0,order:0},
+ {label:'MA50',data:MA50,borderColor:AMBER,borderWidth:1.2,pointRadius:0,borderDash:[4,3],order:1},
+ {label:'MA200',data:MA200,borderColor:VIOLET,borderWidth:1.2,pointRadius:0,borderDash:[2,3],order:2}]},
+ options:{interaction:{mode:'index',intersect:false},scales:{x:{grid:{display:false},ticks:{maxTicksLimit:8}},
+ y:{grid:{color:GRID},ticks:{callback:v=>'$'+v}},
+ yV:{position:'right',grid:{drawOnChartArea:false},beginAtZero:true,max:Math.max.apply(null,VOL)*3.2,ticks:{callback:v=>(v/1e6)+'M'}}}}});
+
+// 2) IV TERM STRUCTURE — line: labels=expiries, data=ATM IV %. (CYAN, fill:true, tension:.25)
+// 3) IV SKEW — line: labels=strikes, two datasets callIV(GREEN)/putIV(RED), spanGaps:true.
+// 4) OI BY STRIKE — diverging: type:'bar', indexAxis:'y', put data .map(v=>-v), BOTH scales stacked:true,
+//    strip the minus in x ticks/tooltip (Math.abs). calls GREEN right, puts RED left.
+// 5) OWNERSHIP — type:'bar' holders on yLeft + a type:'line' insider-net on yRight (dual-axis like #1).
+</script>
+```
+Tiny KPI sparkline = dependency-free inline SVG `<polyline>` (x=i/(n-1)*W, y=H-((v-min)/(max-min))*H).
+Print-safe: `addEventListener('beforeprint',()=>{for(const i in Chart.instances)Chart.instances[i].resize()})`.
 
 ## 2. Component patterns (fill with real values)
 
@@ -627,6 +681,61 @@ Per-lens signal = bullish / neutral / bearish (+ a confidence word). **No Buy/Se
 ```
 Options lens: lead with IV rank / 25-delta **skew** / put-call / max pain as an EOD positioning read.
 
+**Valuation table (full — never just one or two ratios):**
+```html
+<table><tr><th>Multiple</th><th>Current</th><th>Read</th></tr>
+  <tr><td>P/E (TTM)</td><td class="num rt">{{N/M if loss}}</td><td>...</td></tr>
+  <tr><td>Forward P/E</td><td class="num rt">{{84}}</td><td>...</td></tr>
+  <tr><td>P/S · EV/Sales</td><td class="num rt">{{26.5 · 27.6}}</td><td>...</td></tr>
+  <tr><td>EV/EBITDA</td><td class="num rt">{{N/M}}</td><td>...</td></tr>
+  <tr><td>P/B · PEG</td><td class="num rt">{{12.1 · 0.78}}</td><td>...</td></tr>
+  <tr><td>P/FCF · FCF yield</td><td class="num rt">{{N/M}}</td><td>...</td></tr>
+  <tr><td>Div yield · analyst target</td><td class="num rt">{{— · $151}}</td><td>...</td></tr>
+</table>
+```
+Loss-maker: P/E & EV/EBITDA → "N/M"; lead P/S + EV/Sales; add a Rule-of-40 line (rev growth % + FCF/op margin %).
+
+**Short-interest & float block:**
+```html
+<div class="grid2">
+  <table><tr><th>Share structure</th><th>Value</th></tr>
+    <tr><td>Shares outstanding</td><td class="num rt">{{80.24M}}</td></tr>
+    <tr><td>Float (% of shares)</td><td class="num rt">{{76.08M (94.8%)}}</td></tr>
+    <tr><td>% insiders / % institutions</td><td class="num rt">{{5.1% / 72%}}</td></tr></table>
+  <table><tr><th>Short interest</th><th>Value</th></tr>
+    <tr><td>Short shares (prior)</td><td class="num rt">{{10.04M (9.33M)}}</td></tr>
+    <tr><td>Short % of float</td><td class="num rt">{{13.2%}}</td></tr>
+    <tr><td>Days-to-cover</td><td class="num rt">{{0.84}}</td></tr>
+    <tr><td>As-of (settlement)</td><td class="num rt">{{date}}</td></tr></table>
+</div>
+<div class="chk">Squeeze check — short%float {{✓/✗}} · days-to-cover {{✓/✗}} · trend {{↑/↓}} → {{verdict}}</div>
+```
+Short interest & float are web-sourced; stamp the settlement date. Borrow-fee / utilization are paid → omit honestly, never fabricate.
+
+**Options-analytics block (3 charts + a metrics table):**
+```html
+<div class="grid2">
+  <div class="chart-card"><h3>ATM IV term structure</h3><div class="chart-wrap"><canvas id="termChart"></canvas></div></div>
+  <div class="chart-card"><h3>IV skew ({{expiry}})</h3><div class="chart-wrap"><canvas id="skewChart"></canvas></div></div>
+</div>
+<div class="chart-card"><h3>Open interest by strike — call vs put</h3><div class="chart-wrap tall"><canvas id="oiChart"></canvas></div></div>
+<table><tr><th>Options</th><th>Value</th><th>Read</th></tr>
+  <tr><td>P/C (vol · OI)</td><td class="num rt">{{0.39 · 1.16}}</td><td>...</td></tr>
+  <tr><td>ATM IV / IV rank</td><td class="num rt">{{125%}}</td><td>...</td></tr>
+  <tr><td>Implied move (~30d)</td><td class="num rt">{{±35% (±$59)}}</td><td>price×IV×√(DTE/365)</td></tr>
+  <tr><td>Max pain</td><td class="num rt">{{$170}}</td><td>argmin payout</td></tr>
+</table>
+```
+
+**Financials trend table (multi-quarter — the story, not one line):**
+```html
+<table><tr><th>Qtr</th><th>Revenue</th><th>YoY</th><th>Gross %</th><th>Op %</th><th>EPS</th></tr>
+  <tr><td>{{Q1'26}}</td><td class="num rt">{{$151.1M}}</td><td class="num rt">{{+132%}}</td><td class="num rt">...</td><td class="num rt">...</td><td class="num rt">...</td></tr>
+  <tr><td>TTM</td><td class="num rt">...</td>...</tr>
+</table>
+```
+Pair with FCF (TTM), net debt / net cash, current ratio, and — for loss-makers — cash runway.
+
 **Caveat / data-gap box:**
 ```html
 <div class="warn">⚠️ {{e.g. DB shows quarter-end cash; verify post-quarter raises via web before any runway claim.}}</div>
@@ -655,10 +764,12 @@ DB anomalies (cash runway, anomalous Form 4, missing earnings date). Not part of
 
 ## 3. Assembly order
 
-header → verdict card → lights row → KPI dashboard → **Insider → Institutional → Options →
-Financials** lenses → Technical/price context → events (next earnings, dividends) → Recent news
-(web overlay, separate) → Sources &amp; freshness → disclaimer. Keep top-3 risks inline; push
-minor detail to an appendix. Every claim must trace to a number shown on the page.
+header → verdict card → lights row → KPI dashboard → **price + MA + volume chart** → **Insider →
+Institutional (+ ownership-trend chart) → Options (term + skew + OI charts, analytics table) →
+Financials (trend table)** → Valuation table → Short-interest & float block → Technical context →
+events (next earnings, dividends) → Recent news (web overlay, separate) → Sources &amp; freshness →
+disclaimer. Charts are mandatory (§1b); each section is a FULL block (§3), not one line; top-3
+risks inline, minor detail to an appendix; every claim traces to a number shown on the page.
 """
 
 
