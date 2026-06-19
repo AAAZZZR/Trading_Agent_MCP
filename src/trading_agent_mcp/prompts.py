@@ -301,6 +301,27 @@ fall back to the `get_company_news` MCP tool and **state in the report that live
 omitted**. Keep web news in its own clearly-labelled section so it never contaminates the cited
 first-party core.
 
+**Step 2.5 — Build the thesis (institutional rigor — THIS is the buy-side edge).** A real buy-side
+report's edge is **variant perception**: the divergence between what the market is pricing in and what
+the data says (a no-consensus dataset is not crippled — surface a differentiated, defensible read of
+first-party data vs the price).
+- **Market-implied read (reverse-DCF):** back out the growth the current multiple embeds, using
+  justified-multiple algebra with the firm's OWN fundamentals + a **disclosed** discount rate r —
+  g implied by P/E = Payout×(1+g)/(r−g), or P/B = (ROE−g)/(r−g), or P/S = NetMargin×Payout×(1+g)/(r−g).
+  Frame as "at today's multiple the market is pricing in ~X% growth — plausible vs its own 5-yr history
+  / sector?" An **implied/justified read, NOT a forecast or price target**; state the r you assumed.
+- **Our read:** what the first-party signals say (insider cluster/selling, 13F flow, options IV/skew,
+  margin/FCF trajectory). State the **divergence** explicitly — and because being different only pays
+  if it is right, a one-line **"what would make this wrong"** (a falsifier).
+- **Scenarios (base / bull / bear)** with disclosed inputs, never vibes: base = reverse-DCF implied
+  growth; bull/bear = the company's own ~5-yr valuation-multiple percentile band (re-rate / de-rate);
+  size the move with the **options-implied move** (ATM straddle ≈ 1σ to the next event,
+  price×IV×√(DTE/365)) and read put/call skew as the market's asymmetry. **Always include a downside.**
+- **Honesty spine (adopt CFA V(A)/V(B) norms):** separate **fact from opinion** — write "implies /
+  we read / we expect", never "will"; quant outputs (reverse-DCF, options-implied) are **estimates,
+  not certainties**; disclose the method's limits — **no analyst consensus, EOD/not real-time, 13F
+  ~45-day lag, the assumed r**; weight first-party SEC data above web/aggregators.
+
 **Step 3 — Render the HTML.** Read the **`data://report-template`** resource, copy its `<style>` and
 its Chart.js setup verbatim, and assemble the body from its component patterns with your real values.
 Output ONE **self-contained** HTML document (inline CSS/JS; Chart.js 4.4.7 via CDN is the only
@@ -309,12 +330,17 @@ volume; (2) IV term structure; (3) IV skew curve; (4) open-interest by strike; (
 **Each section is a FULL block**, not one line: a complete valuation table, a short-interest & float
 block + squeeze checklist, and the options-analytics table (term/skew/OI/max-pain/expected-move).
 Order: verdict card (overall traffic light + "based on N/4 lenses", one sentence: strongest bull
-reason + biggest risk) -> lens lights -> KPI dashboard -> price+MA+volume chart -> Insider ->
+reason + biggest risk) -> lens lights -> **Thesis (variant perception: market-implied growth vs our
+first-party read + what would make us wrong)** -> KPI dashboard -> price+MA+volume chart -> Insider ->
 Institutional (+ ownership-trend chart) -> Options (3 charts + analytics table) -> Financials (trend
-table) -> Earnings-call takeaways (mgmt tone + guidance) -> Valuation table -> Short-interest & float
--> Technical -> events -> Recent news (web, separate) -> Sources & freshness -> disclaimer. Numbers in monospace; pair every traffic-light color
-with a word. Before emitting, self-check: every claim traces to a number shown on the page, no lens
-is scored without data, no invented target, and the 5 charts are present.{peer_line}
+table) -> Earnings-call takeaways (mgmt tone + guidance) -> Valuation table (incl. market-implied
+growth + each multiple's own 5-yr percentile) -> **Scenarios (base/bull/bear + options-implied move)**
+-> Short-interest & float -> Technical -> events -> Recent news (web, separate) -> **How we analyze &
+its limits** (method + gaps: no consensus, EOD, 13F lag, assumed r) -> Sources & freshness ->
+disclaimer. Numbers in monospace; pair every traffic-light color with a word. Before emitting,
+self-check: every claim traces to a number on the page; **fact separated from opinion (no "will")**;
+**market-implied growth (reverse-DCF) shown instead of a fabricated target**; a **downside (bear)
+scenario** present; the method's limits disclosed; no lens scored without data; the 5 charts present.{peer_line}
 """
 
 

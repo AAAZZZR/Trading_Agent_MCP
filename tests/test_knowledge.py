@@ -178,6 +178,10 @@ async def test_build_stock_report_prompt_content() -> None:
         "expected move",  # 期權深度:隱含波動
         "Charts are mandatory",  # 圖表為必要(非一面文字)
         "get_earnings_transcript",  # 法說會/記者會為必要區塊
+        "variant perception",  # 投行精髓:與市場預期的分歧 = 論點核心
+        "reverse-DCF",  # 反推市場隱含成長(取代捏造目標價)
+        "base / bull / bear",  # 情境框架(含下行)
+        "fact from opinion",  # CFA V(B):事實 vs 意見
     ):
         assert anchor in text, f"build_stock_report missing anchor: {anchor!r}"
 
