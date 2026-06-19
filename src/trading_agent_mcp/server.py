@@ -72,8 +72,9 @@ mcp = FastMCP(
         "要彈性 / 統計查詢用 execute_readonly_sql,下手前先用 describe_table 看欄位(兩者需 pro tier)。\n"
         "另有資料字典 resource(data://dictionary,各表單位 / 調整 / 代碼 / 滯後語意)、HTML 報告模板 "
         "resource(data://report-template)與分析 prompts(analyze_stock / analyze_stock_full / "
-        "compare_stocks / build_stock_report——產單一自包含 HTML 個股報告,第一手 SEC 資料為招牌、"
-        "搭配 agent 自己的 web 新聞、報告語言隨使用者);引用數字或做分析前可先讀。"
+        "compare_stocks / build_stock_report(買方深度 HTML 報告:四面向+期權+法說會+籌碼,圖表必備)/ "
+        "company_profile(介紹型 HTML 報告:這家公司在幹嘛,業務取自 10-K Item 1 + web)——第一手 SEC "
+        "為招牌、報告語言隨使用者);引用數字或做分析前可先讀。"
     ),
     auth=_build_auth(),
 )

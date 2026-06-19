@@ -177,6 +177,7 @@ async def test_build_stock_report_prompt_content() -> None:
         "max pain",  # 期權深度:max pain
         "expected move",  # 期權深度:隱含波動
         "Charts are mandatory",  # 圖表為必要(非一面文字)
+        "get_earnings_transcript",  # 法說會/記者會為必要區塊
     ):
         assert anchor in text, f"build_stock_report missing anchor: {anchor!r}"
 
@@ -186,3 +187,26 @@ async def test_build_stock_report_peers_comparison() -> None:
     text = await _render_prompt_text("build_stock_report", {"ticker": "AAOI", "peers": "COHR"})
     assert "AAOI" in text and "COHR" in text
     assert "comparison" in text.lower(), "peer mode should instruct a comparison layout"
+
+
+async def test_company_profile_prompt_registered() -> None:
+    """company_profile 介紹型 prompt 有註冊。"""
+    registered = await mcp.list_prompts()
+    names = {p.name for p in registered}
+    assert "company_profile" in names, "missing company_profile prompt"
+
+
+async def test_company_profile_prompt_content() -> None:
+    """介紹型:語言行 + ticker + 第一手業務(10-K Item 1)+ 業務區塊 + 指向買方報告。"""
+    text = await _render_prompt_text("company_profile", {"ticker": "AAPL"})
+    assert text.splitlines()[0].startswith("Respond in")
+    assert "AAPL" in text
+    for anchor in (
+        "Item 1",  # 10-K 業務章節(第一手)
+        "get_filing_section",  # 抓業務描述
+        "What the company does",  # 業務區塊
+        "data://report-template",  # 共用設計系統
+        "build_stock_report",  # 指向買方深度報告
+        "Web search",  # 找業務 / 近況
+    ):
+        assert anchor in text, f"company_profile missing anchor: {anchor!r}"

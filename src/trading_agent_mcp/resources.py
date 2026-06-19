@@ -770,6 +770,16 @@ Financials (trend table)** → Valuation table → Short-interest & float block 
 events (next earnings, dividends) → Recent news (web overlay, separate) → Sources &amp; freshness →
 disclaimer. Charts are mandatory (§1b); each section is a FULL block (§3), not one line; top-3
 risks inline, minor detail to an appendix; every claim traces to a number shown on the page.
+
+## 4. Company-profile variant (for the `company_profile` prompt)
+
+For the INTRODUCTION report (not the four-lens buy-side one): reuse the same `<style>`, but assemble
+a **business-first** layout — header (one-line "what they do" + As-of + EDGAR provenance) → **What
+the company does** (business overview, products, how it makes money — from 10-K Item 1 Business) →
+**Segments / revenue mix** (chart or list if disclosed) → **Market position & competitors** → **Key
+facts** strip → **Financial snapshot** (revenue trend + a price chart, one-line profitability) →
+**Recent developments** (web, separate) → Sources & disclaimer. Qualitative-first; cite the 10-K +
+web; skip the deep ratio / options / short-interest tables (those belong to the buy-side report).
 """
 
 

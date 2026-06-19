@@ -283,6 +283,9 @@ market-expectation read instead. Use tools for every number — never your memor
 - Events: `list_earnings` (next report date — flag if imminent) + `list_dividends`. See
   `data://dictionary` for field semantics; `get_objective_report` bundles much of this in one call;
   pro tier can aggregate with `execute_readonly_sql`.
+- Earnings call (記者會 / 法說會 — **required section**): `get_earnings_transcript` for the latest
+  call — management **tone + forward guidance** (filter `speaker` to the CEO/CFO or page with
+  `offset`; coverage skews mid/large-cap, so if there is no transcript, say so explicitly).
 - Valuation (FULL set, never one or two): from `get_overview` take P/E, forward_pe, peg, P/S, P/B,
   ev_to_ebitda; and **compute** EV = market cap + total debt − cash, EV/Sales = EV / TTM revenue,
   P/FCF + FCF yield. Loss-makers → P/E & EV/EBITDA "N/M", lead P/S + EV/Sales + a Rule-of-40 line.
@@ -308,8 +311,64 @@ block + squeeze checklist, and the options-analytics table (term/skew/OI/max-pai
 Order: verdict card (overall traffic light + "based on N/4 lenses", one sentence: strongest bull
 reason + biggest risk) -> lens lights -> KPI dashboard -> price+MA+volume chart -> Insider ->
 Institutional (+ ownership-trend chart) -> Options (3 charts + analytics table) -> Financials (trend
-table) -> Valuation table -> Short-interest & float -> Technical -> events -> Recent news (web,
-separate) -> Sources & freshness -> disclaimer. Numbers in monospace; pair every traffic-light color
+table) -> Earnings-call takeaways (mgmt tone + guidance) -> Valuation table -> Short-interest & float
+-> Technical -> events -> Recent news (web, separate) -> Sources & freshness -> disclaimer. Numbers in monospace; pair every traffic-light color
 with a word. Before emitting, self-check: every claim traces to a number shown on the page, no lens
 is scored without data, no invented target, and the 5 charts are present.{peer_line}
+"""
+
+
+# ============================================================
+# company_profile —— 介紹型報告(這家公司在幹嘛,讓人快速看懂)
+# ============================================================
+# 與 build_stock_report(買方深度)成對:profile 偏質性、以「找出並說明業務」為核心,
+# 第一手業務描述取自 10-K Item 1 Business(get_filing_section)+ agent 自己的 web search,
+# 同樣用 data://report-template 渲染、報告語言隨使用者。買方深度報告用 build_stock_report。
+
+
+@mcp.prompt
+def company_profile(ticker: str, language: str = "the user's language") -> str:
+    """Plain-English company PROFILE (what the business is) as a self-contained HTML page.
+
+    For a reader who wants to quickly understand the company — what it does, how it makes money,
+    its segments/products, market position, key facts, and a light financial snapshot. This is an
+    INTRODUCTION, not a buy/sell analysis (use `build_stock_report` for the deep buy-side report).
+    The business narrative is sourced first-hand from the 10-K "Item 1 Business" section
+    (`get_filing_section`) plus the agent's own web search; renders with the `data://report-template`
+    design system. Final report in the user's language.
+
+    Args:
+        ticker: US stock symbol, e.g. AAPL.
+        language: Output language for the report (defaults to the user's language).
+    """
+    return f"""\
+Respond in {language}. Build a plain-English **company profile** of **{ticker}** as a self-contained
+HTML page — goal: the reader understands the business in ~2 minutes. This is an INTRODUCTION, not a
+buy/sell call (for the deep buy-side report, use the `build_stock_report` prompt). Every fact carries
+an as-of date; data is EOD/filing-based; not investment advice.
+
+**Step 1 — Identify the business (the core — go find it).**
+- `get_company` for name / sector / industry / exchange.
+- Pull the **first-hand business description**: `list_filings` (form_type `10-K`, newest; ADRs use
+  `20-F`) -> `list_filing_sections` -> `get_filing_section` for **Item 1 "Business"**. Summarize what
+  the company actually does, its products / services, and **how it makes money**.
+- **Web search** (if available) to confirm + freshen: "<company> business model / segments / main
+  products / customers / competitors / recent developments" — each with source + date. If you have no
+  web tools, state the profile is filing-only.
+
+**Step 2 — Light facts & financials (context, not deep quant).**
+- `get_overview`: market cap + a one-line valuation note (NOT the deep ratio table — that's the
+  buy-side report's job).
+- `get_income_statements` (annual ~4 or quarterly ~8): revenue trend + a YoY growth headline and
+  whether it is profitable. ONE `list_daily_prices` (~1y) for a price + volume trend chart.
+- Segment / revenue mix from the 10-K if disclosed (else "not broken out").
+
+**Step 3 — Render the HTML.** Read `data://report-template`, copy its `<style>`, and assemble a
+PROFILE layout (not the four-lens one): header (ticker, name, sector, mkt cap, a one-line "what they
+do", As-of + EDGAR provenance) -> **What the company does** (business overview, products, how it makes
+money) -> **Segments / revenue mix** (a chart or list if disclosed) -> **Market position &
+competitors** -> **Key facts** strip (mkt cap, exchange, HQ / employees / founded if found) ->
+**Financial snapshot** (revenue trend + the price+volume chart, one-line profitability) -> **Recent
+developments** (web, separate section) -> Sources & disclaimer. Keep it concrete and readable; cite
+the 10-K and any web source; every number carries an as-of date; not investment advice.
 """
