@@ -74,7 +74,9 @@ mcp = FastMCP(
         "resource(data://report-template)與分析 prompts(analyze_stock / analyze_stock_full / "
         "compare_stocks / build_stock_report(買方深度 HTML 報告:四面向+期權+法說會+籌碼,圖表必備)/ "
         "company_profile(介紹型 HTML 報告:這家公司在幹嘛,業務取自 10-K Item 1 + web)——第一手 SEC "
-        "為招牌、報告語言隨使用者);引用數字或做分析前可先讀。"
+        "為招牌、報告語言隨使用者);引用數字或做分析前可先讀。\n"
+        "不熟悉本服務 / 第一次使用,先呼叫 start_here 工具拿產品範圍、選工具指引與完整 "
+        "workflow 地圖(它也會點出只看 tools/list 容易漏掉的 prompts / resources)。"
     ),
     auth=_build_auth(),
 )

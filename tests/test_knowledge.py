@@ -10,8 +10,8 @@ FastMCP 3.x 的 async 內省 API:list_resources() / list_prompts() / read_resour
 render_prompt(name, args)。
 """
 
-# import 觸發 server / resources / prompts 的註冊 side-effect。
-from trading_agent_mcp import prompts, resources  # noqa: F401
+# import 觸發 server / resources / prompts / tools 的註冊 side-effect。
+from trading_agent_mcp import prompts, resources, tools  # noqa: F401
 from trading_agent_mcp.server import mcp
 
 # ---- 註冊性測試 -----------------------------------------------------------
@@ -214,3 +214,42 @@ async def test_company_profile_prompt_content() -> None:
         "Web search",  # 找業務 / 近況
     ):
         assert anchor in text, f"company_profile missing anchor: {anchor!r}"
+
+
+# ---- start_here(新 agent 入口 / 產品地圖)--------------------------------
+
+
+async def test_start_here_tool_registered() -> None:
+    """start_here 入口工具有註冊(provider 層未經 tier gating,新 agent 一定看得到)。"""
+    registered = await mcp._local_provider.list_tools()
+    names = {t.name for t in registered}
+    assert "start_here" in names, "missing start_here onboarding tool"
+
+
+async def test_start_here_content() -> None:
+    """start_here 回傳產品地圖,且指向的 prompts / resources 與實際註冊一致(地圖不過時)。"""
+    fn = getattr(tools.start_here, "fn", tools.start_here)
+    payload = await fn()
+
+    for key in (
+        "product", "scope", "first_call", "how_to_pick_a_tool",
+        "workflows", "prompts", "resources", "honesty_rules",
+    ):
+        assert key in payload, f"start_here missing key: {key!r}"
+
+    # 指向的 prompt 名 / resource URI 必須真的存在(避免地圖與註冊脫節)。
+    registered_prompts = {p.name for p in await mcp.list_prompts()}
+    assert set(payload["prompts"]) <= registered_prompts, (
+        f"start_here lists unknown prompts: {set(payload['prompts']) - registered_prompts}"
+    )
+    registered_resources = {str(r.uri) for r in await mcp.list_resources()}
+    assert set(payload["resources"]) <= registered_resources, (
+        f"start_here lists unknown resources: {set(payload['resources']) - registered_resources}"
+    )
+
+    # 第一信任點 = get_data_coverage;誠實規則命中關鍵錨點(null≠0 / as-of / 13F 滯後)。
+    assert payload["first_call"].startswith("Call get_data_coverage")
+    honesty = " ".join(payload["honesty_rules"]).lower()
+    assert "never zero" in honesty
+    assert "as-of" in honesty or "as of" in honesty
+    assert "45-day" in honesty or "filing lag" in honesty
