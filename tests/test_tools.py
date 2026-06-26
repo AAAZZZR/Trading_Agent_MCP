@@ -25,6 +25,7 @@ async def test_all_tools_registered() -> None:
     names = {t.name for t in registered}
 
     expected = {
+        "start_here",
         "get_data_coverage",
         "list_companies", "search_companies", "get_company",
         "list_filings", "get_filing", "list_filing_sections", "get_filing_section",

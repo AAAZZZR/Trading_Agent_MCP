@@ -34,6 +34,93 @@ from trading_agent_mcp.sql_query import (
 )
 
 # ============================================================
+# Onboarding —— 新 agent 的入口(刻意放最前面,tools/list 第一個就看到)
+# ============================================================
+
+
+@mcp.tool
+async def start_here() -> dict[str, Any]:
+    """START HERE — the orientation index for any agent new to investor-db. Call this first.
+
+    Most MCP clients inspect tools/list before anything else and never read the server
+    instructions, prompts, or resources — so a new agent can miss that this product already
+    ships ready-made report prompts and a data dictionary. This tool is the map: it returns
+    the product scope and limits, how to pick the right tool, the end-to-end workflows
+    (including the prompts/resources you would otherwise overlook), and the honesty rules for
+    quoting figures.
+
+    This is the capabilities / getting-started / what-can-this-do entry point. It takes no
+    arguments, calls no backend, and is always safe and free to call. After reading it, call
+    get_data_coverage before quoting any exact number.
+
+    Returns:
+        dict {product, scope, first_call, how_to_pick_a_tool, workflows, prompts, resources,
+        honesty_rules} — a compact orientation, not live data.
+    """
+    return {
+        "product": "investor-db",
+        "scope": (
+            "US equities + ADRs only. EOD or slower — never real-time. ~3-5 years of history. "
+            "No analyst ratings, revenue forecasts, or estimate revisions (only two vendor "
+            "fields exist: earnings estimate EPS and an analyst target price)."
+        ),
+        "first_call": (
+            "Call get_data_coverage before quoting any exact figure — it reports per-domain "
+            "freshness and coverage and is the trust anchor for every other tool."
+        ),
+        "how_to_pick_a_tool": [
+            "Don't know the exact ticker -> search_companies",
+            "Want a fast four-lens traffic-light conclusion -> get_analysis",
+            "Want the raw data bundle to analyze yourself -> get_objective_report",
+            "Need any market number -> fetch it with a tool; never answer from memory (it is stale)",
+            "Flexible or statistical queries (pro tier) -> describe_table, then execute_readonly_sql",
+        ],
+        "workflows": [
+            {
+                "name": "quick_answer_in_chat",
+                "best_for": "a fast conclusion inside the conversation",
+                "steps": ["get_company (or search_companies)", "get_analysis", "get_objective_report"],
+            },
+            {
+                "name": "full_html_research_report",
+                "best_for": "a polished, self-contained HTML equity report artifact",
+                "use_prompt": "build_stock_report",
+                "read_resources": ["data://dictionary", "data://report-template"],
+            },
+            {
+                "name": "company_profile",
+                "best_for": "what does this company actually do (business overview)",
+                "use_prompt": "company_profile",
+            },
+            {
+                "name": "compare_two_names",
+                "best_for": "a side-by-side comparison of two tickers",
+                "use_prompt": "compare_stocks",
+            },
+        ],
+        "prompts": [
+            "analyze_stock",
+            "analyze_stock_full",
+            "compare_stocks",
+            "build_stock_report",
+            "company_profile",
+        ],
+        "resources": {
+            "data://dictionary": "Field-level semantics, units, codes, and lag rules. Read before interpreting numbers.",
+            "data://analysis-playbook": "Step-by-step analysis methodology (document form of analyze_stock).",
+            "data://report-template": "The HTML report design system used by build_stock_report.",
+        },
+        "honesty_rules": [
+            "Every figure needs an as-of date (from get_data_coverage or the row itself).",
+            "null means missing, never zero.",
+            "Do not invent price targets or forecasts.",
+            "13F institutional holdings carry a ~45-day filing lag.",
+            "News is a vendor aggregate overlay, not first-party SEC evidence — keep it separate.",
+        ],
+    }
+
+
+# ============================================================
 # Meta / data coverage(資料新鮮度與覆蓋範圍 —— agent 信任基石)
 # ============================================================
 
