@@ -34,12 +34,16 @@ from trading_agent_mcp.sql_query import (
     validate_select_only,
 )
 
+# 全站唯讀資料服務:每個 tool 都只查詢、不改動任何狀態;openWorldHint=False = 只觸及
+# 自家 DB,不與外部世界互動。新增 tool 一律要帶上(有註冊性測試強制)。
+_READONLY_ANNOTATIONS = {"readOnlyHint": True, "openWorldHint": False}
+
 # ============================================================
 # Onboarding —— 新 agent 的入口(刻意放最前面,tools/list 第一個就看到)
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def start_here() -> dict[str, Any]:
     """START HERE — the orientation index for any agent new to investor-db. Call this first.
 
@@ -126,7 +130,7 @@ async def start_here() -> dict[str, Any]:
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_data_coverage() -> dict[str, Any]:
     """Report what this dataset actually covers and how fresh each domain is.
 
@@ -168,7 +172,7 @@ async def get_data_coverage() -> dict[str, Any]:
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_companies(limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
     """列出被追蹤的美股公司,依 ticker 字母排序。
 
@@ -190,7 +194,7 @@ async def list_companies(limit: int = 200, offset: int = 0) -> list[dict[str, An
     return await api.get("/api/companies", params={"limit": limit, "offset": offset})
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def search_companies(q: str, limit: int = 20) -> list[dict[str, Any]]:
     """以 ticker 或公司名稱關鍵字模糊搜尋公司(typeahead 用),適合「我不知道精確 ticker」時。
 
@@ -210,7 +214,7 @@ async def search_companies(q: str, limit: int = 20) -> list[dict[str, Any]]:
     return await api.get("/api/companies/search", params={"q": q, "limit": limit})
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_company(ticker: str) -> dict[str, Any]:
     """以精確 ticker 取得單一公司的完整基本資料。不知道精確 ticker 時先用 `search_companies`。
 
@@ -234,7 +238,7 @@ async def get_company(ticker: str) -> dict[str, Any]:
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_filings(
     ticker: str,
     form_type: str | None = None,
@@ -267,7 +271,7 @@ async def list_filings(
     return await api.get("/api/filings", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_filing(accession: str) -> dict[str, Any]:
     """以 SEC accession number 取得單一 filing 的後設資料。
 
@@ -279,7 +283,7 @@ async def get_filing(accession: str) -> dict[str, Any]:
     return await api.get(f"/api/filings/{accession}")
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_filing_sections(accession: str) -> list[dict[str, Any]]:
     """列出某 filing 已解析的章節目錄(item_code / 標題 / 字元範圍,不含內文)。
 
@@ -291,7 +295,7 @@ async def list_filing_sections(accession: str) -> list[dict[str, Any]]:
     return await api.get(f"/api/filings/{accession}/sections")
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_filing_section(accession: str, item_code: str) -> dict[str, Any]:
     """取得單一 filing 章節的完整內文。**先呼叫 `list_filing_sections(accession)` 拿正確的
     item_code,不要憑常識猜**(照 "Item 1A" 這種寫法會 404)。
@@ -324,7 +328,7 @@ async def get_filing_section(accession: str, item_code: str) -> dict[str, Any]:
 Period = Literal["annual", "quarterly"]
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_income_statements(
     ticker: str,
     period: Period | None = None,
@@ -350,7 +354,7 @@ async def get_income_statements(
     return await api.get("/api/financials/income", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_balance_sheets(
     ticker: str,
     period: Period | None = None,
@@ -376,7 +380,7 @@ async def get_balance_sheets(
     return await api.get("/api/financials/balance", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_cash_flow_statements(
     ticker: str,
     period: Period | None = None,
@@ -402,7 +406,7 @@ async def get_cash_flow_statements(
     return await api.get("/api/financials/cashflow", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_latest_period(
     ticker: str,
     period: Period | None = None,
@@ -431,7 +435,7 @@ async def get_latest_period(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_insider_trades(
     ticker: str,
     since: str | None = None,
@@ -468,7 +472,7 @@ async def list_insider_trades(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_daily_prices(
     ticker: str,
     start: str | None = None,
@@ -514,7 +518,7 @@ async def list_daily_prices(
     return await api.get("/api/prices/daily", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_latest_price(ticker: str) -> dict[str, Any]:
     """取得最新一個交易日的第一手日 K(OHLC + 成交量,價格 USD)。
 
@@ -532,7 +536,7 @@ async def get_latest_price(ticker: str) -> dict[str, Any]:
     return await api.get("/api/prices/daily/latest", params={"ticker": ticker.upper()})
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_hourly_prices(
     ticker: str,
     start: str | None = None,
@@ -577,7 +581,7 @@ async def list_hourly_prices(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_institutional_holders(ticker: str) -> list[dict[str, Any]]:
     """取得主要機構持股清單(前幾大,第一手 SEC 13F 自算,非第三方聚合)。
 
@@ -596,7 +600,7 @@ async def list_institutional_holders(ticker: str) -> list[dict[str, Any]]:
     return await api.get("/api/holdings/institutions", params={"ticker": ticker.upper()})
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_holders_breakdown(ticker: str) -> dict[str, Any]:
     """取得內部人 / 機構持股比例總覽(第一手自算:13F 機構持倉 + Form 4 內部人 + 流通股數)。
 
@@ -617,7 +621,7 @@ async def get_holders_breakdown(ticker: str) -> dict[str, Any]:
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_13f_holders(
     ticker: str,
     quarter_end: str | None = None,
@@ -648,7 +652,7 @@ async def list_13f_holders(
     return await api.get("/api/13f/holders", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_13f_portfolio(
     cik: str,
     quarter_end: str | None = None,
@@ -678,7 +682,7 @@ async def list_13f_portfolio(
     return await api.get("/api/13f/portfolio", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_13f_top_buyers(
     ticker: str,
     quarter_end: str | None = None,
@@ -703,7 +707,7 @@ async def list_13f_top_buyers(
     return await api.get("/api/13f/top-buyers", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_13f_top_sellers(
     ticker: str,
     quarter_end: str | None = None,
@@ -733,7 +737,7 @@ async def list_13f_top_sellers(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_dividends(
     ticker: str,
     limit: int = 100,
@@ -761,7 +765,7 @@ async def list_dividends(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_splits(
     ticker: str,
     limit: int = 100,
@@ -794,7 +798,7 @@ async def list_splits(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_earnings(
     ticker: str,
     start: str | None = None,
@@ -828,7 +832,7 @@ async def list_earnings(
     return await api.get(f"/api/earnings/{ticker.upper()}", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_earnings_calendar(
     start: str | None = None,
     end: str | None = None,
@@ -862,7 +866,7 @@ async def get_earnings_calendar(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_earnings_transcript(
     ticker: str,
     quarter: str | None = None,
@@ -934,7 +938,7 @@ async def get_earnings_transcript(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_company_news(
     ticker: str,
     days: int = 7,
@@ -968,7 +972,7 @@ async def get_company_news(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_market_news(
     topic: str | None = None,
     limit: int = 20,
@@ -1007,7 +1011,7 @@ async def get_market_news(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_etf_profile(ticker: str) -> dict[str, Any]:
     """取得單一 ETF 的層級 metadata(淨資產 / 費用率 / 配息率 / 是否槓桿等)。
 
@@ -1025,7 +1029,7 @@ async def get_etf_profile(ticker: str) -> dict[str, Any]:
     return await api.get(f"/api/etf/{ticker.upper()}/profile")
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_etf_holdings(
     ticker: str,
     limit: int = 100,
@@ -1051,7 +1055,7 @@ async def list_etf_holdings(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_etfs_holding_ticker(
     ticker: str,
     limit: int = 100,
@@ -1084,7 +1088,7 @@ async def list_etfs_holding_ticker(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_macro_series(category: str | None = None) -> list[dict[str, Any]]:
     """列出可查的總經 / 商品 / 指數 series 目錄(自我描述字典),依 (category, series_id) 排序。
 
@@ -1108,7 +1112,7 @@ async def list_macro_series(category: str | None = None) -> list[dict[str, Any]]
     return await api.get("/api/macro/series", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_macro_series(
     series_id: str,
     start: str | None = None,
@@ -1152,7 +1156,7 @@ async def get_macro_series(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_market_movers(date: str | None = None) -> dict[str, Any]:
     """取得某交易日的全市場漲幅榜 / 跌幅榜 / 成交最熱榜(各 top 20)。
 
@@ -1181,7 +1185,7 @@ async def get_market_movers(date: str | None = None) -> dict[str, Any]:
     return await api.get("/api/market/movers", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_ipo_calendar(
     from_date: str | None = None,
     to_date: str | None = None,
@@ -1215,7 +1219,7 @@ async def get_ipo_calendar(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def screen_insider_buys(
     transaction_code: str = "P",
     since_days: int = 90,
@@ -1268,7 +1272,7 @@ async def screen_insider_buys(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_analysis(ticker: str) -> dict[str, Any]:
     """取得四面向紅綠燈分析(基本面/籌碼面/技術面/期權面結論 + 綜合總評)。
 
@@ -1305,7 +1309,7 @@ async def get_analysis(ticker: str) -> dict[str, Any]:
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_objective_report(
     ticker: str,
     sections: str | None = None,
@@ -1361,7 +1365,7 @@ async def get_objective_report(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_overview(ticker: str) -> dict[str, Any]:
     """取得公司估值快照的原始數據:市值 / 本益比家族 / Beta / 52 週高低 / 均線 / 分析師目標價。
 
@@ -1392,7 +1396,7 @@ async def get_overview(ticker: str) -> dict[str, Any]:
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_options_chain(
     ticker: str,
     as_of: str | None = None,
@@ -1435,7 +1439,7 @@ async def get_options_chain(
     return await api.get("/api/options/chain", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_option_expirations(
     ticker: str, as_of: str | None = None
 ) -> list[dict[str, Any]]:
@@ -1459,7 +1463,7 @@ async def get_option_expirations(
     return await api.get("/api/options/expirations", params=params)
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_option_contract_history(
     contract_id: str,
     start: str | None = None,
@@ -1493,7 +1497,7 @@ async def get_option_contract_history(
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def search_institutions(q: str, limit: int = 20) -> list[dict[str, Any]]:
     """以機構名稱或 CIK 關鍵字模糊搜尋 13F filer(typeahead),適合「只知道機構名字」時。
 
@@ -1512,7 +1516,7 @@ async def search_institutions(q: str, limit: int = 20) -> list[dict[str, Any]]:
     return await api.get("/api/13f/institutions/search", params={"q": q, "limit": limit})
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def get_institution(cik: str) -> dict[str, Any]:
     """以精確 CIK 取得單一 13F filer 基本資料(名稱 / first_seen / 最新持倉季)。
 
@@ -1532,7 +1536,7 @@ async def get_institution(cik: str) -> dict[str, Any]:
 # ============================================================
 
 
-@mcp.tool
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_etf_sectors(ticker: str) -> list[dict[str, Any]]:
     """取得某 ETF 的 GICS sector 權重,依權重由大到小。給判讀 ETF 的類股配置。
 
@@ -1589,7 +1593,7 @@ def _record_to_dict(record: Any) -> dict[str, Any]:
 # tier:free)在 list_tools 看不到此 tool,直接呼叫也會被擋(get_tool 回 None)。
 # 其餘 structured tool 不加 auth,free / pro 都能用。
 # 注意:auth 關閉(無 verifier)或 stdio 本機開發時框架會 skip_auth,此 gating 不生效。
-@mcp.tool(auth=require_scopes("tier:pro"))
+@mcp.tool(auth=require_scopes("tier:pro"), annotations=_READONLY_ANNOTATIONS)
 async def execute_readonly_sql(query: str) -> str:
     """跑一段 readonly SELECT,回 JSON 字串(rows + meta)。給需要彈性查詢的 agent / 分析用。
 
@@ -1674,7 +1678,7 @@ _DESCRIBE_TABLE_SQL = """
 """
 
 
-@mcp.tool(auth=require_scopes("tier:pro"))
+@mcp.tool(auth=require_scopes("tier:pro"), annotations=_READONLY_ANNOTATIONS)
 async def describe_table(table_name: str | None = None) -> str:
     """自省 readonly SQL 的 schema —— `execute_readonly_sql` 下手前先看欄位,避免猜錯欄位名。
 
