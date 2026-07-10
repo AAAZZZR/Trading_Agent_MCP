@@ -156,12 +156,9 @@ _CASES = [
         {"ticker": "aapl"},
         {"ticker": "AAPL"},
     ),
-    (
-        tools.list_hourly_prices,
-        "/api/prices/hourly",
-        {"ticker": "aapl"},
-        {"ticker": "AAPL", "limit": "5000"},
-    ),
+    # 注意:list_hourly_prices / list_daily_prices 不帶 start/end 時會自動回推 start
+    # (讓預設回「最近 N 筆」),那條路徑的參數含動態日期,改由下方專屬測試驗證,
+    # 這裡只保留「顯式帶 start/end 時不回推」的 case。
     (
         tools.list_hourly_prices,
         "/api/prices/hourly",
@@ -612,3 +609,104 @@ async def test_get_company_news_404_raises_tool_error() -> None:
         with pytest.raises(ToolError) as excinfo:
             await _unwrap(tools.get_company_news)(ticker="nope")
     assert "404" in str(excinfo.value)
+
+
+# ---- prices:不帶 start/end 時自動回推 start(拿最近 N 筆,非最舊 N 筆)-----------
+#
+# 後端 ORDER BY date/dt ASC + LIMIT,只給 limit 會回最舊 N 筆;工具在無邊界時自動回推
+# start,把視窗收斂到約 N 個交易日,使「預設回最近 N 筆」成立。start 含動態日期,故不放
+# 進上面的精確比對 _CASES,獨立驗證。
+
+from datetime import date, datetime, timedelta, timezone  # noqa: E402
+from math import ceil  # noqa: E402
+
+
+async def test_list_daily_prices_autoderives_start_when_no_bounds() -> None:
+    """list_daily_prices 不帶 start/end:自動送出回推的 start、不送 end。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        route = mock.get("/api/prices/daily").respond(200, json=[])
+        await _unwrap(tools.list_daily_prices)(ticker="aapl", limit=30)
+
+    params = dict(route.calls.last.request.url.params)
+    assert params["ticker"] == "AAPL"
+    assert params["limit"] == "30"
+    assert "end" not in params  # 上界留白 = 取到最新
+    assert "start" in params
+    derived = date.fromisoformat(params["start"])
+    expected = date.today() - timedelta(days=ceil(30 * 1.4))
+    assert abs((derived - expected).days) <= 1  # 容忍 assert 期間跨過午夜
+
+
+async def test_list_daily_prices_keeps_explicit_bounds() -> None:
+    """顯式帶 start/end 時不回推,原樣轉發。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        route = mock.get("/api/prices/daily").respond(200, json=[])
+        await _unwrap(tools.list_daily_prices)(
+            ticker="aapl", start="2024-01-01", end="2024-06-30", limit=30
+        )
+
+    params = dict(route.calls.last.request.url.params)
+    assert params["start"] == "2024-01-01"
+    assert params["end"] == "2024-06-30"
+
+
+async def test_list_hourly_prices_autoderives_start_when_no_bounds() -> None:
+    """list_hourly_prices 不帶 start/end:自動送出回推的 start(UTC ISO)、不送 end。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        route = mock.get("/api/prices/hourly").respond(200, json=[])
+        await _unwrap(tools.list_hourly_prices)(ticker="aapl", limit=100)
+
+    params = dict(route.calls.last.request.url.params)
+    assert params["ticker"] == "AAPL"
+    assert params["limit"] == "100"
+    assert "end" not in params
+    assert "start" in params
+    derived = datetime.strptime(params["start"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    expected = datetime.now(timezone.utc) - timedelta(days=ceil(100 / 5))
+    assert abs((derived - expected).total_seconds()) <= 172800  # 2 天內(容忍執行耗時)
+
+
+# ---- get_earnings_transcript:falsy / whitespace quarter 視同省略 -----------------
+
+
+async def test_get_earnings_transcript_blank_quarter_picks_latest() -> None:
+    """quarter 傳空字串 → 視同省略,取最新一季(不能被當成合法季別去打 detail)。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/companies/AAPL/transcripts").respond(
+            200,
+            json=[{"quarter": "2025Q4", "segments": 71, "fetched_at": "2026-02-01T12:00:00Z"}],
+        )
+        latest_route = mock.get("/api/companies/AAPL/transcripts/2025Q4").respond(
+            200,
+            json={"ticker": "AAPL", "quarter": "2025Q4", "segments_total": 71,
+                  "fetched_at": "2026-02-01T12:00:00Z", "segments": []},
+        )
+        result = await _unwrap(tools.get_earnings_transcript)(ticker="aapl", quarter="")
+
+    assert latest_route.called
+    assert result["quarter"] == "2025Q4"
+
+
+async def test_get_earnings_transcript_whitespace_quarter_stripped() -> None:
+    """quarter 前後帶空白 → strip 後再 upper,打到正確季別(不帶空白)。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/companies/AAPL/transcripts").respond(
+            200,
+            json=[
+                {"quarter": "2025Q4", "segments": 71, "fetched_at": "2026-02-01T12:00:00Z"},
+                {"quarter": "2025Q3", "segments": 68, "fetched_at": "2025-11-01T12:00:00Z"},
+            ],
+        )
+        detail_route = mock.get("/api/companies/AAPL/transcripts/2025Q3").respond(
+            200,
+            json={"ticker": "AAPL", "quarter": "2025Q3", "segments_total": 68,
+                  "fetched_at": "2025-11-01T12:00:00Z", "segments": []},
+        )
+        result = await _unwrap(tools.get_earnings_transcript)(
+            ticker="aapl", quarter="  2025q3  "
+        )
+
+    assert detail_route.called
+    assert result["quarter"] == "2025Q3"

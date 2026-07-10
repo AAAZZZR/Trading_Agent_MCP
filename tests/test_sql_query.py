@@ -147,6 +147,22 @@ def test_clamp_inner_limit_with_top_limit() -> None:
     assert out.rstrip().endswith(f"LIMIT {MAX_LIMIT}")
 
 
+# ---- clamp_limit:非整數頂層 LIMIT 不可炸(當作無上界,補 default)-------------
+#
+# sqlparse 把 'LIMIT 2.5' / 'LIMIT 5e3' 也歸類成 Number token,舊版直接 int() 會丟
+# 未捕捉的 ValueError 把 tool 打爆。修正後這種當「無可用上界」處理,外層補 default。
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM companies LIMIT 2.5",
+    "SELECT * FROM companies LIMIT 5e3",
+    "SELECT * FROM companies limit 0.99",
+])
+def test_clamp_non_integer_limit_falls_back_to_default(sql: str) -> None:
+    out = clamp_limit(sql)  # 不 raise
+    assert out.rstrip().endswith(f"LIMIT {DEFAULT_LIMIT}")
+
+
 # ---- truncate_payload -----------------------------------------------------
 
 

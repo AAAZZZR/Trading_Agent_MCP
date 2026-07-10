@@ -16,8 +16,9 @@ YYYY-MM-DD ISO 字串,除非個別 docstring 另有說明。
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from math import ceil
 from typing import Any, Literal
 
 from fastmcp.exceptions import ToolError
@@ -292,13 +293,21 @@ async def list_filing_sections(accession: str) -> list[dict[str, Any]]:
 
 @mcp.tool
 async def get_filing_section(accession: str, item_code: str) -> dict[str, Any]:
-    """取得單一 filing 章節的完整內文。
+    """取得單一 filing 章節的完整內文。**先呼叫 `list_filing_sections(accession)` 拿正確的
+    item_code,不要憑常識猜**(照 "Item 1A" 這種寫法會 404)。
+
+    item_code 是本平台解析時的內部代碼,**不是** SEC 表單上的 "Item 1A" 字面。實際格式:
+      - 10-K / 10-Q:羅馬數字 Part + 項次,例 "I.1A"(Part I Item 1A 風險因素)、
+        "II.7"(Part II Item 7 MD&A)。
+      - 8-K:數字 item 代碼,例 "2.02"(財報結果)、"9.01"(財報附件)。
+    唯一可靠的做法是先用 `list_filing_sections` 列出該 filing 真正存在的 item_code 再帶進來。
 
     Data cadence: discovered daily 06:00 UTC, parsed same day.
 
     Args:
         accession: SEC accession。
-        item_code: 章節編號,例如 10-K 的 "Item 1A"(風險因素)、"Item 7"(MD&A)。
+        item_code: 章節代碼,**取自 `list_filing_sections` 回傳的 item_code**
+            (例 "I.1A"、"II.7"、"2.02"、"9.01");原樣帶入,不要自行改寫成 "Item X"。
     """
     return await api.get(f"/api/filings/{accession}/sections/{item_code}")
 
@@ -308,8 +317,10 @@ async def get_filing_section(accession: str, item_code: str) -> dict[str, Any]:
 # ============================================================
 
 
-# period 篩選:後端把 "annual" → fiscal_period='FY'、"quarterly" → IN ('Q1','Q2','Q3','Q4')。
-# 回傳列本身帶 fiscal_year / fiscal_period 欄位,agent 可據此辨識是哪一期。
+# period 篩選:後端把 "annual" → fiscal_period='FY'、"quarterly" → IN ('Q1','Q2','Q3')。
+# **注意 quarterly 刻意不含 Q4** —— 多數 filer 不單獨申報 Q4,其數字隱含在全年 FY 裡
+# (Q4 ≈ FY − Q1 − Q2 − Q3),所以要 Q4 請取 annual(FY)那期。回傳列本身帶
+# fiscal_year / fiscal_period 欄位,agent 可據此辨識是哪一期。
 Period = Literal["annual", "quarterly"]
 
 
@@ -325,7 +336,8 @@ async def get_income_statements(
 
     Args:
         ticker: 美股代號(自動轉大寫)。
-        period: "annual"(年報 FY)或 "quarterly"(季報 Q1-Q4);省略 = 兩者都回。
+        period: "annual"(年報 FY)或 "quarterly"(季報,**僅 Q1-Q3**;Q4 隱含在 FY 裡,
+            要 Q4 請用 annual);省略 = 兩者都回。
         limit: 最多回傳幾筆(1-200,預設 20)。
 
     Returns:
@@ -350,7 +362,8 @@ async def get_balance_sheets(
 
     Args:
         ticker: 美股代號(自動轉大寫)。
-        period: "annual"(FY)或 "quarterly"(Q1-Q4);省略 = 兩者都回。
+        period: "annual"(FY)或 "quarterly"(**僅 Q1-Q3**;Q4 隱含在 FY,要 Q4 用 annual);
+            省略 = 兩者都回。
         limit: 最多回傳幾筆(1-200,預設 20)。
 
     Returns:
@@ -375,7 +388,8 @@ async def get_cash_flow_statements(
 
     Args:
         ticker: 美股代號(自動轉大寫)。
-        period: "annual"(FY)或 "quarterly"(Q1-Q4);省略 = 兩者都回。
+        period: "annual"(FY)或 "quarterly"(**僅 Q1-Q3**;Q4 隱含在 FY,要 Q4 用 annual);
+            省略 = 兩者都回。
         limit: 最多回傳幾筆(1-200,預設 20)。
 
     Returns:
@@ -399,7 +413,8 @@ async def get_latest_period(
 
     Args:
         ticker: 美股代號(自動轉大寫)。
-        period: "annual" 取最近一個年報期;"quarterly" 取最近一季;省略 = 不限期別取最新。
+        period: "annual" 取最近一個年報期(FY);"quarterly" 取最近一季(**僅 Q1-Q3**,
+            Q4 隱含在 FY);省略 = 不限期別取最新。
 
     Returns:
         dict,含 period_end(YYYY-MM-DD)與 income / balance / cash_flow 三個子物件。
@@ -465,21 +480,33 @@ async def list_daily_prices(
     這是畫長線圖 / 回測 / 算報酬率該用的日 K(直存第一手日線)。涵蓋最多約 5 年,
     依上市時間而異(新上市股較短)。**不含還原價(adj_close)** —— 跨除權息 / 分割
     要自行用 `list_dividends` / `list_splits` 調整。要 intraday(小時)粒度改用
-    `list_hourly_prices`。完整歷史 pull 可能不小,只要近期請帶 start/end 或縮小 limit。
+    `list_hourly_prices`。
+
+    **拿「最近」資料的正確做法**:後端一律 date 升冪(最舊在前)再套 limit,所以
+    「縮小 limit」拿到的是**最舊**的 N 筆,不是最新的。本工具在你**不帶 start/end**
+    時會自動回推一個起始日,讓預設就回**最近約 N 筆**(N=limit);要精確區間才自己帶
+    start/end。
 
     Data cadence: EOD T+1, refreshed Mon-Sat ~10:00 UTC; adjusted; 5-year rolling window; NOT real-time.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
-        start: 起始日期(YYYY-MM-DD),包含。省略 = 不設下界。
-        end: 結束日期(YYYY-MM-DD),包含。省略 = 不設上界。
-        limit: 最多幾筆(1-10000,預設 2000)。
+        start: 起始日期(YYYY-MM-DD),包含。省略且 end 也省略 = 自動回推,回最近約 N 筆。
+        end: 結束日期(YYYY-MM-DD),包含。省略 = 不設上界(取到最新)。
+        limit: 最多幾筆(1-10000,預設 2000)。省略 start/end 時同時決定回溯視窗大小。
 
     Returns:
         list[dict],每筆含 ticker、date(YYYY-MM-DD)、open、high、low、close(USD)、
-        volume。**不含 adj_close**。只要最新一筆用 `get_latest_price`。查無資料回空 list。
+        volume,date 升冪。**不含 adj_close**。只要最新一筆用 `get_latest_price`。
+        查無資料回空 list。
     """
     params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
+    # 後端是 ORDER BY date ASC + LIMIT,只給 limit 會拿到最舊 N 筆。使用者沒帶任何邊界時
+    # 自動回推起始日,把視窗收斂到約 limit 個交易日,讓預設回「最近約 N 筆」。回推倍率取
+    # 1.4(週末+假日 → 每日曆日約 0.69 交易日,1.4 略低於精確界 1.449,寧可少收幾根也
+    # 不要因視窗過大而讓 ASC+LIMIT 砍掉最新的幾根)。
+    if start is None and end is None:
+        start = (date.today() - timedelta(days=ceil(limit * 1.4))).isoformat()
     if start is not None:
         params["start"] = start
     if end is not None:
@@ -517,15 +544,27 @@ async def list_hourly_prices(
     粒度比 `list_daily_prices` 細,適合做 intraday 分析或 backtest 對齊。
     歷史深度有限(60 天滾動保留),要長區間請改用 `list_daily_prices`。
 
+    **拿「最近」資料的正確做法**:跟日 K 一樣,後端是 dt 升冪 + limit,只給 limit 拿到的是
+    **最舊**的 N 筆。本工具在你**不帶 start/end**時會自動回推一個起始時間,讓預設回**最近約
+    N 根**小時 K;要精確區間才自己帶 start/end。
+
     Data cadence: 60-minute bars, Mon-Fri ~22:00 UTC refresh; 60-day rolling retention.
 
     Args:
         ticker: 美股代號。
-        start: 起始 UTC datetime(ISO,例 "2026-05-22T13:30:00Z"),包含。
-        end: 結束 UTC datetime,包含。
-        limit: 最多幾筆(1-20000,預設 5000)。
+        start: 起始 UTC datetime(ISO,例 "2026-05-22T13:30:00Z"),包含。省略且 end 也省略 =
+            自動回推,回最近約 N 根。
+        end: 結束 UTC datetime,包含。省略 = 不設上界(取到最新)。
+        limit: 最多幾筆(1-20000,預設 5000)。省略 start/end 時同時決定回溯視窗大小。
     """
     params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
+    # 同 list_daily_prices:ORDER BY dt ASC + LIMIT。沒帶邊界時自動回推起始時間,把視窗
+    # 收斂到約 limit 根小時 K(美股每交易日約 7 根 → limit/7 個交易日 → 再乘 1.4 換成日曆
+    # 天,即 limit/5 天),讓預設回「最近約 N 根」。
+    if start is None and end is None:
+        start = (
+            datetime.now(timezone.utc) - timedelta(days=ceil(limit / 5))
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
     if start is not None:
         params["start"] = start
     if end is not None:
@@ -594,11 +633,14 @@ async def list_13f_holders(
     Args:
         ticker: 美股代號(自動轉大寫)。
         quarter_end: 季底(YYYY-MM-DD,例 "2024-12-31");省略 = 自動取該股票最新一季。
-        limit: 最多回傳幾筆(1-10000,預設 100)。
+        limit: 最多回傳幾筆(1-1000,預設 100)。**JSON 模式後端硬上界 1000**,傳更大值會被
+            靜默截到 1000。
 
     Returns:
         list[dict],每筆含 filer_cik、filer_name、ticker、cusip、quarter_end(YYYY-MM-DD)、
-        shares、market_value(USD)、change_in_shares、change_type(NEW/ADD/REDUCE/EXIT)。
+        shares、market_value(USD)、change_in_shares、change_type。change_type 值域:
+        "new"(本季新進)、"increase"(加碼)、"decrease"(減碼)、"sold_all"(清倉,
+        shares 為 0/NULL)、"no_change"(持平)。
     """
     params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
     if quarter_end is not None:
@@ -622,7 +664,8 @@ async def list_13f_portfolio(
     Args:
         cik: 機構 CIK(10 碼 zero-pad 字串,例 "0001067983")。
         quarter_end: 季底(YYYY-MM-DD);省略 = 自動取該機構最新一季。
-        limit: 最多回傳幾筆(1-10000,預設 100)。
+        limit: 最多回傳幾筆(1-1000,預設 100)。**JSON 模式後端硬上界 1000**,傳更大值會被
+            靜默截到 1000。
 
     Returns:
         list[dict],欄位同 `list_13f_holders`(filer_cik、filer_name、ticker、cusip、
@@ -648,7 +691,8 @@ async def list_13f_top_buyers(
     Args:
         ticker: 美股代號(自動轉大寫)。
         quarter_end: 季底(YYYY-MM-DD);省略 = 自動取該股票最新一季。
-        limit: 最多回傳幾筆(1-10000,預設 50)。
+        limit: 最多回傳幾筆(1-1000,預設 50)。**JSON 模式後端硬上界 1000**,傳更大值會被
+            靜默截到 1000。
 
     Returns:
         list[dict],欄位同 `list_13f_holders`,依 change_in_shares 遞減排序。
@@ -672,7 +716,8 @@ async def list_13f_top_sellers(
     Args:
         ticker: 美股代號(自動轉大寫)。
         quarter_end: 季底(YYYY-MM-DD);省略 = 自動取該股票最新一季。
-        limit: 最多回傳幾筆(1-10000,預設 50)。
+        limit: 最多回傳幾筆(1-1000,預設 50)。**JSON 模式後端硬上界 1000**,傳更大值會被
+            靜默截到 1000。
 
     Returns:
         list[dict],欄位同 `list_13f_holders`,依 change_in_shares 遞增排序。
@@ -843,7 +888,8 @@ async def get_earnings_transcript(
 
     Args:
         ticker: 美股代號(自動轉大寫)。
-        quarter: AV calendar quarter,如 "2025Q4"(大小寫不拘);**省略 = 自動取最新一季**。
+        quarter: AV calendar quarter,如 "2025Q4"(大小寫不拘,前後空白會自動 strip);
+            **省略 / 空字串 / 純空白 = 自動取最新一季**。
         offset: 跳過前 N 段(分頁用,>=0,預設 0)。
         limit: 本頁段落數上限(1-500,預設 40 以保護 context;要全文請翻頁)。
         speaker: 只看某發言者,對 speaker 做部分比對(case-insensitive,如 "cook");省略 = 全部。
@@ -867,7 +913,11 @@ async def get_earnings_transcript(
         )
 
     available_quarters = [s["quarter"] for s in summaries[:8]]
-    target_quarter = quarter.upper() if quarter else summaries[0]["quarter"]
+    # quarter 有給且不是純空白才用它(先 strip 去掉前後空白再 upper,避免 " 2025q4 "
+    # 帶空白打 detail 打不到);空字串 / 純空白視同省略 → 取最新一季。
+    target_quarter = (
+        quarter.strip().upper() if quarter and quarter.strip() else summaries[0]["quarter"]
+    )
 
     params: dict[str, Any] = {"offset": offset, "limit": limit}
     if speaker is not None:
@@ -931,10 +981,14 @@ async def get_market_news(
     Data cadence: 每 4 小時更新一次,標注為非即時。
 
     Args:
-        topic: 按 AV 主題過濾;省略 = 全市場。可選值舉例:earnings, ipo,
-            mergers_and_acquisitions, financial_markets, technology, economy_macro,
-            blockchain, energy_transportation, finance, life_sciences, manufacturing,
-            real_estate, retail_wholesale。
+        topic: 按 AV 主題過濾;省略 = 全市場。**大小寫敏感的精確比對** —— 後端拿你傳的字串
+            去跟文章 topics[].topic 逐字比對,對不上(含大小寫 / 拼字不同)就靜默回空 list,
+            **不是報錯**。存的是 Alpha Vantage 的顯示標籤(Title Case,非小寫代碼),合法值:
+            "Blockchain", "Earnings", "IPO", "Mergers & Acquisitions", "Financial Markets",
+            "Economy - Fiscal Policy", "Economy - Monetary Policy", "Economy - Macro/Overall",
+            "Energy & Transportation", "Finance", "Life Sciences", "Manufacturing",
+            "Real Estate & Construction", "Retail & Wholesale", "Technology"。不確定當前實際
+            有哪些值,先不帶 topic 呼叫一次、看回傳每篇的 topics[].topic 再原樣帶回來。
         limit: 最多回傳幾筆(1-200,預設 20)。
 
     Returns:
@@ -1511,6 +1565,25 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+def _record_to_dict(record: Any) -> dict[str, Any]:
+    """asyncpg Record → dict,重複欄名加後綴保留全部欄位。
+
+    直接 `dict(record)` 會讓 JOIN 出的同名欄(例 `SELECT a.id, b.id FROM a JOIN b`)後者
+    蓋前者、靜默掉一欄。這裡逐欄位處理,第二個以後的同名欄依序加 `_2` / `_3` … 後綴
+    (第一個維持原名),讓每一欄的值都留在結果裡。
+    """
+    out: dict[str, Any] = {}
+    seen: dict[str, int] = {}
+    for key, value in record.items():
+        if key in seen:
+            seen[key] += 1
+            out[f"{key}_{seen[key]}"] = value
+        else:
+            seen[key] = 1
+            out[key] = value
+    return out
+
+
 # Tier gating:execute_readonly_sql 是重量級 tool(自由 SQL),只開給 pro tier。
 # require_scopes("tier:pro") 由 FastMCP 在元件層 enforce —— free tier(scopes 只有
 # tier:free)在 list_tools 看不到此 tool,直接呼叫也會被擋(get_tool 回 None)。
@@ -1541,6 +1614,9 @@ async def execute_readonly_sql(query: str) -> str:
       - 沒寫頂層 LIMIT → 外層補 LIMIT 1000。
       - 頂層 LIMIT N → 外層用 min(N, 10000)。
       - 子查詢內寫 LIMIT 也無法繞過(外層上界一定生效)。
+      - **只認 `LIMIT <整數>` 形式**當頂層明確上界;`LIMIT ALL`、`LIMIT $1`、非整數
+        (`LIMIT 2.5` / `5e3`)、以及 ANSI `FETCH FIRST n ROWS ONLY` 都**不**被視為明確上界
+        → 一律套外層預設 1000。所以要一次拿超過 1000 列,請用 `LIMIT <整數>`(別用 FETCH FIRST)。
 
     Output 超過 100KB 會截斷並附註記(改窄 WHERE / 縮小 LIMIT 再查)。
 
@@ -1550,6 +1626,8 @@ async def execute_readonly_sql(query: str) -> str:
 
     Returns:
         JSON 字串,shape = {"row_count": N, "executed_query": "...", "rows": [...]}。
+        **JOIN 出的同名欄**(例 `SELECT a.id, b.id ...`)不會互蓋 —— 第二個以後的同名欄會
+        加 `_2` / `_3` … 後綴(`id`, `id_2`),要避免就自己下 alias(`b.id AS b_id`)。
         驗證失敗 / DB 錯誤 / 未設定 DSN → {"error": "..."}。
     """
     try:
@@ -1570,7 +1648,7 @@ async def execute_readonly_sql(query: str) -> str:
     except Exception as exc:  # asyncpg.PostgresError 等 —— 直接 surface 給 LLM 看。
         return json.dumps({"error": f"Query failed: {exc}"})
 
-    rows = [dict(r) for r in records]
+    rows = [_record_to_dict(r) for r in records]
     payload = json.dumps(
         {"row_count": len(rows), "executed_query": safe_query, "rows": rows},
         default=_json_default,

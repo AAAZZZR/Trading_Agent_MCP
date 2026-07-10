@@ -119,7 +119,8 @@ def _top_level_limit(sql: str) -> int | None:
     子查詢 / 衍生表 / CTE 內的 LIMIT 會被 sqlparse 包進 Parenthesis / Function token,
     只走 statement 最外層 token list 自然跳過它們 —— 這正是舊 regex 版(抓「第一個」
     LIMIT)被內層 LIMIT 繞過的根因修正。只認 `LIMIT <整數常數>`;`LIMIT ALL` / `LIMIT $1`
-    視同「無可用上界」回 None(交給 wrap 補 default)。
+    / 非整數常數(`LIMIT 2.5` / `5e3`,sqlparse 仍歸類成 Number 但 int() 會丟 ValueError)
+    一律視同「無可用上界」回 None(交給 wrap 補 default)。
     """
     statements = [s for s in sqlparse.parse(sql) if str(s).strip()]
     if not statements:
@@ -129,8 +130,13 @@ def _top_level_limit(sql: str) -> int | None:
         if token.ttype is Keyword and token.normalized.upper() == "LIMIT":
             for nxt in tokens[i + 1:]:
                 if nxt.ttype in Number:
-                    return int(nxt.value)
-                return None  # LIMIT 後第一個有意義 token 非整數常數 → 無上界
+                    try:
+                        return int(nxt.value)
+                    except ValueError:
+                        # 合法 Postgres 但非整數的 LIMIT(如 2.5 / 5e3)—— 不當明確上界,
+                        # 回 None 讓外層補 default。真的非法 LIMIT 由 DB 端報錯,tool 不炸。
+                        return None
+                return None  # LIMIT 後第一個有意義 token 非數字常數 → 無上界
     return None
 
 
