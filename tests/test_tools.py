@@ -52,6 +52,19 @@ async def test_all_tools_registered() -> None:
     assert names == expected, f"missing: {expected - names}, extra: {names - expected}"
 
 
+async def test_all_tools_annotated_readonly() -> None:
+    """全站唯讀:每個 tool 都必須標 readOnlyHint=True + openWorldHint=False。
+
+    MCP client(與 Anthropic Connectors Directory 審查)靠這組 hint 判斷 tool 是否安全;
+    新 tool 漏帶 `annotations=_READONLY_ANNOTATIONS` 時這裡會擋下。
+    """
+    registered = await mcp._local_provider.list_tools()
+    for t in registered:
+        assert t.annotations is not None, f"{t.name} 缺 annotations"
+        assert t.annotations.readOnlyHint is True, f"{t.name} 未標 readOnlyHint=True"
+        assert t.annotations.openWorldHint is False, f"{t.name} 未標 openWorldHint=False"
+
+
 # ---- 個別 tool URL / params 測試 ------------------------------------------
 #
 # 每個 case 都跑同樣的 pattern:mock 對應 endpoint → call tool → assert URL+params。
