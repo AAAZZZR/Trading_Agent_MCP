@@ -89,6 +89,47 @@ async def test_select_returns_json(patched_pool) -> None:
     assert "LIMIT 1" in sent_query
 
 
+class _DupColRecord:
+    """模擬帶重複欄名的 asyncpg.Record —— 真實 Record.items() 會逐欄位 yield(含同名)。
+
+    plain dict 塞不下同名 key,所以另建這個只實作 .items() 的極簡替身。
+    """
+
+    def __init__(self, pairs: list[tuple[str, object]]) -> None:
+        self._pairs = pairs
+
+    def items(self):
+        return iter(self._pairs)
+
+
+def _make_fake_pool_with_records(records: list):
+    """跟 _make_fake_pool 一樣,但直接吃 record 物件(不強制轉 _FakeRecord)。"""
+    conn = MagicMock()
+    conn.fetch = AsyncMock(return_value=records)
+
+    @asynccontextmanager
+    async def acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = acquire
+    return pool, conn
+
+
+async def test_duplicate_column_names_preserved_with_suffix(patched_pool) -> None:
+    """JOIN 出同名欄 → 不互蓋,第二個以後加 _2 / _3 後綴保留全部欄位。"""
+    dup = _DupColRecord([("id", 1), ("id", 2), ("id", 3), ("name", "AAPL")])
+    pool, _ = _make_fake_pool_with_records([dup])
+
+    with patch.object(tools, "get_pool", AsyncMock(return_value=pool)):
+        result = await tools.execute_readonly_sql(
+            query="SELECT a.id, b.id, c.id, a.name FROM a JOIN b USING (x) JOIN c USING (y)"
+        )
+
+    payload = json.loads(result)
+    assert payload["rows"] == [{"id": 1, "id_2": 2, "id_3": 3, "name": "AAPL"}]
+
+
 async def test_select_serializes_date_and_decimal(patched_pool) -> None:
     """date / Decimal 要能 JSON serialize(透過 _json_default)。"""
     pool, _ = _make_fake_pool(
