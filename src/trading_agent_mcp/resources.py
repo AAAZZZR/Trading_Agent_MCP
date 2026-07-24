@@ -1,7 +1,7 @@
 """MCP resources —— 領域知識層(資料語意字典 + 分析方法論)。
 
 把「表的語意(單位 / 調整 / 代碼 / 滯後)」與「分析該怎麼做」放進協定層,讓接上
-這個 MCP 的外部 agent 不必只靠 47 個 tool 的 docstring 拼湊。內容為英文(給全球
+這個 MCP 的外部 agent 不必只靠 52 個 tool 的 docstring 拼湊。內容為英文(給全球
 agent),透過 `@mcp.resource("uri")` 以 import side-effect 註冊(同 tools.py 模式)。
 
 兩個 resource:
@@ -189,6 +189,30 @@ Which tools serve this domain: `list_13f_holders`, `list_13f_portfolio`,
   reallocation).
 - `ticker` may be null in a filer's portfolio when the CUSIP maps to a non-US security or
   derivative not in our watchlist.
+
+---
+
+## Domain: FINRA short positioning (short_interest / short_volume_daily)
+
+Which tools serve this domain: `get_short_interest`, `get_short_volume`,
+`screen_high_short_interest`.
+
+- Source: FINRA Query API. This domain contains **two different measures that must never be
+  substituted for one another**.
+- `short_interest` is the open short position reported on FINRA's twice-monthly settlement
+  schedule. Fields include `settlement_date`, `current_short_position`,
+  `previous_short_position`, `change_previous`, `change_percent`,
+  `average_daily_volume`, and `days_to_cover`. The API derives `short_percent_of_float`
+  only when a non-null positive `float_shares` snapshot is available.
+- `short_volume_daily` is daily **off-exchange short-sale transaction volume** aggregated
+  across FINRA reporting facilities. Fields include `trade_date`, `short_volume`,
+  `short_exempt_volume`, `total_volume`, `short_volume_percent` (0-100), and
+  `facility_count`. It is not exchange-consolidated market volume and does not reveal the
+  number of open short positions.
+- A high daily short-volume percentage does **not** by itself prove bearish positioning or a
+  growing short balance: market making, hedging, and same-day covering can all contribute.
+- Always stamp short interest with its settlement date. Use multiple settlement observations
+  for trend; use daily short volume only as a separate flow/context signal.
 
 ---
 
@@ -710,7 +734,7 @@ Loss-maker: P/E & EV/EBITDA → "N/M"; lead P/S + EV/Sales; add a Rule-of-40 lin
 </div>
 <div class="chk">Squeeze check — short%float {{✓/✗}} · days-to-cover {{✓/✗}} · trend {{↑/↓}} → {{verdict}}</div>
 ```
-Short interest & float are web-sourced; stamp the settlement date. Borrow-fee / utilization are paid → omit honestly, never fabricate.
+Short interest is FINRA-backed; float is the latest overview snapshot. Stamp both as-of dates. Borrow-fee / utilization are paid → omit honestly, never fabricate.
 
 **Options-analytics block (3 charts + a metrics table):**
 ```html
