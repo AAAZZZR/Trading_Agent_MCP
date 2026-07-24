@@ -45,6 +45,7 @@ async def test_all_tools_registered() -> None:
         "get_market_movers", "get_ipo_calendar",
         "screen_insider_buys",
         "get_analysis", "get_objective_report", "get_overview",
+        "get_short_interest", "get_short_volume", "screen_high_short_interest",
         "get_options_chain", "get_option_expirations", "get_option_contract_history",
         "search_institutions", "get_institution", "list_etf_sectors",
         "execute_readonly_sql", "describe_table",
@@ -422,6 +423,30 @@ _CASES = [
          "filings_limit": "5", "recent_price_bars": "30"},
     ),
     (tools.get_overview, "/api/overview/AAPL", {"ticker": "aapl"}, {}),
+
+    # FINRA short market data
+    (
+        tools.get_short_interest,
+        "/api/shorts/interest/WLF",
+        {"ticker": "wlf"},
+        {"limit": "24"},
+    ),
+    (
+        tools.get_short_volume,
+        "/api/shorts/volume/WLF",
+        {"ticker": "wlf"},
+        {"days": "30", "limit": "200"},
+    ),
+    (
+        tools.screen_high_short_interest,
+        "/api/shorts/screener",
+        {},
+        {
+            "min_short_percent_float": "10.0",
+            "min_days_to_cover": "0.0",
+            "limit": "50",
+        },
+    ),
 
     # Options(工具參數統一成 ticker;但 API 端 query 仍是 underlying)
     (
