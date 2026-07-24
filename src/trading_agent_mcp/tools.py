@@ -77,6 +77,7 @@ async def start_here() -> dict[str, Any]:
             "Don't know the exact ticker -> search_companies",
             "Want a fast four-lens traffic-light conclusion -> get_analysis",
             "Want the raw data bundle to analyze yourself -> get_objective_report",
+            "Need positioning -> get_short_interest for open positions; get_short_volume for separate off-exchange flow",
             "Need any market number -> fetch it with a tool; never answer from memory (it is stale)",
             "Flexible or statistical queries (pro tier) -> describe_table, then execute_readonly_sql",
         ],
@@ -120,6 +121,7 @@ async def start_here() -> dict[str, Any]:
             "null means missing, never zero.",
             "Do not invent price targets or forecasts.",
             "13F institutional holdings carry a ~45-day filing lag.",
+            "Never substitute daily short-sale volume for twice-monthly open short interest.",
             "News is a vendor aggregate overlay, not first-party SEC evidence — keep it separate.",
         ],
     }
