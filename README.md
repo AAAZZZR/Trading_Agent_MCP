@@ -1,6 +1,6 @@
 # Trading_Agent_MCP
 
-MCP server 對 LLM 暴露 [investor-db](https://github.com/AAAZZZR/Trading_Agent) 的資料工具 —— 美股公司、SEC filings、財務報表、股價、內部人交易、機構持股,以及一個 readonly SQL 自由查詢 tool。
+MCP server 對 LLM 暴露 [investor-db](https://github.com/AAAZZZR/Trading_Agent) 的資料工具 —— 美股公司、SEC filings、財務報表、股價、內部人交易、機構持股、FINRA 空頭資料,以及 readonly SQL 查詢工具。
 
 ## 架構
 
@@ -9,7 +9,7 @@ Claude.ai / Desktop / 其他 MCP client
        │ Streamable HTTP(or stdio)
        │ Authorization: Bearer <MCP_BEARER_TOKEN>
        ▼
-trading_agent_mcp  ◄─── 42 個 tool,對應 API endpoint(+ 1 個自由 SQL tool)
+trading_agent_mcp  ◄─── 52 個 tool,對應 API endpoint(+ 2 個 SQL 工具)
        │ httpx + Authorization: Bearer <MCP_API_AUTH_TOKEN>
        ▼
 Trading_Agent API(FastAPI)
@@ -34,9 +34,9 @@ PostgreSQL(via SQLAlchemy 2.0 async)
 
 **快取取捨**:per-user 模式有一個 ~20s 的 in-process 快取,但「只」存 validity / tier,做為 authorize 短暫失敗(網路抖動 / 5xx)時的 fallback,不取代每次 POST —— 計量與配額永遠以後端每次呼叫為準。
 
-## Tools(42 個)
+## Tools(52 個)
 
-41 個 per-domain tool(對齊 Trading_Agent 的 `lib/api.ts` 與聚合 endpoint),再加 1 個自由 SQL tool:
+50 個 per-domain tool(對齊 Trading_Agent API endpoint),再加 2 個唯讀 SQL / schema 工具:
 
 | Tool | 對應 API endpoint |
 |---|---|
@@ -80,6 +80,9 @@ PostgreSQL(via SQLAlchemy 2.0 async)
 | `get_analysis` | `GET /api/analysis/{ticker}`(四面向紅綠燈,帶解讀) |
 | `get_objective_report` | `GET /api/report/{ticker}`(客觀數據包,純數據) |
 | `screen_insider_buys` | `GET /api/screener/insider-buys` |
+| `get_short_interest` | `GET /api/shorts/interest/{ticker}` |
+| `get_short_volume` | `GET /api/shorts/volume/{ticker}` |
+| `screen_high_short_interest` | `GET /api/shorts/screener` |
 | `execute_readonly_sql` | 直連 Postgres(`investor_db_readonly` role) |
 | `describe_table` | 直連 Postgres(`information_schema` 自省) |
 
@@ -91,7 +94,7 @@ PostgreSQL(via SQLAlchemy 2.0 async)
 `institutional_holdings`, `prices_daily`, `prices_hourly`, `company_overview`,
 `options_eod`, `financials_quarantine`, `ingest_runs`, `alembic_version`,
 `dividends`, `splits`, `earnings_calendar`, `etf_profile`, `etf_holdings`,
-`macro_series`, `macro_series_meta`。實際清單以 `describe_table()`(不帶參數)為準。
+`macro_series`, `macro_series_meta`, `short_interest`, `short_volume_daily`。實際清單以 `describe_table()`(不帶參數)為準。
 
 **安全保證(三層防護)**:
 
