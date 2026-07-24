@@ -289,9 +289,11 @@ market-expectation read instead. Use tools for every number — never your memor
 - Valuation (FULL set, never one or two): from `get_overview` take P/E, forward_pe, peg, P/S, P/B,
   ev_to_ebitda; and **compute** EV = market cap + total debt − cash, EV/Sales = EV / TTM revenue,
   P/FCF + FCF yield. Loss-makers → P/E & EV/EBITDA "N/M", lead P/S + EV/Sales + a Rule-of-40 line.
-- Short interest & float (use your **web search** if available, else mark "not available"): shares
-  outstanding, float (+ % of shares), % insiders, % institutions, short shares (+ prior period),
-  short % of float, days-to-cover; cross-check the insider/institution % against first-party Form 4 / 13F.
+- Short interest & float: call `get_short_interest` for FINRA open-position history
+  (current/prior short shares, short % of float, days-to-cover, settlement date) and `get_overview`
+  for shares outstanding / float. Optionally call `get_short_volume` as a separately labelled
+  off-exchange flow context; **never substitute daily short-sale volume for open short interest**.
+  Cross-check insider/institution ownership against first-party Form 4 / 13F.
 
 **Step 2 — Web news overlay.** If you have **web search** / fetch tools, search: recent news +
 the cause of any large price move, latest earnings + management guidance, capital-structure events
