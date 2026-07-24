@@ -1392,6 +1392,66 @@ async def get_overview(ticker: str) -> dict[str, Any]:
 
 
 # ============================================================
+# FINRA short market data
+# ============================================================
+
+
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
+async def get_short_interest(
+    ticker: str,
+    limit: int = 24,
+) -> list[dict[str, Any]]:
+    """取得 FINRA 未平倉空單歷史(每月兩次),最新 settlement date 在前。
+
+    這是 open short position,不是每日 short-sale volume。short_percent_float 是
+    0-100 百分比數值(12.3 = 12.3%),只有資料庫有可信 float_shares 時才回值;
+    缺分母回 null,不拿 shares outstanding 冒充。limit 預設 24 = 約一年。
+    """
+    return await api.get(
+        f"/api/shorts/interest/{ticker.upper()}", params={"limit": limit}
+    )
+
+
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
+async def get_short_volume(
+    ticker: str,
+    days: int = 30,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """取得 FINRA 場外每日 short-sale transaction volume。
+
+    short_volume_percent 是 FINRA-reported off-exchange short volume / total volume
+    的 0-100 百分比。它是 flow metric,不是未平倉空單,也不含交易所成交量。
+    """
+    return await api.get(
+        f"/api/shorts/volume/{ticker.upper()}",
+        params={"days": days, "limit": limit},
+    )
+
+
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
+async def screen_high_short_interest(
+    min_short_percent_float: float = 10.0,
+    min_days_to_cover: float = 0.0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """掃描最新 FINRA settlement universe,依 short % float 由高到低排序。
+
+    適合找潛在 squeeze / crowded-short 名單。結果只包含有可信 float_shares
+    分母的標的;short % float 高不等於一定會軋空,應再配合 days_to_cover、流動性、
+    價格與催化劑判讀。
+    """
+    return await api.get(
+        "/api/shorts/screener",
+        params={
+            "min_short_percent_float": min_short_percent_float,
+            "min_days_to_cover": min_days_to_cover,
+            "limit": limit,
+        },
+    )
+
+
+# ============================================================
 # Options(期權 EOD —— options_eod)
 # ============================================================
 
