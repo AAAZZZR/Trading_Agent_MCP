@@ -1,0 +1,393 @@
+# Trading_Agent_MCP — Agent Eval 題庫
+#
+# 每題欄位:
+#   id        唯一識別(category 前綴 + 序號),--filter 可用子字串比對。
+#   category  五類之一:single_lookup / multi_tool / screen_aggregate / honesty / freshness
+#   question  繁中,像真實投資人會問的口語問題(餵給受測 agent)。
+#   rubric    給 LLM judge 的評分準則:正確答案應包含什麼 / 不可包含什麼。
+#             **不要寫死當下數值**(資料每天變);寫「應引用具體數字 + 日期、方向 / 量級正確、
+#             有標注資料 as-of 日期」這類可長期成立的準則。
+#   max_turns 該題允許的 agent 工具往返上限(預設 15;複雜綜合題可調高)。
+#
+# 加題指南與 rubric 撰寫原則見 README.md。
+
+questions:
+  # =========================================================================
+  # 1. 單點查詢(11 題)—— 一兩個 tool 就能答,考「挑對工具 + 引用正確欄位」
+  # =========================================================================
+  - id: single_01_aapl_latest_close
+    category: single_lookup
+    question: "AAPL 最新收盤價是多少?是哪一天的?"
+    rubric: >
+      應呼叫 get_latest_price(或 list_daily_prices)取 AAPL 最新日 K。必須同時給出
+      收盤價(close,USD)與該筆的交易日期(YYYY-MM-DD)。價格量級需合理(AAPL 個位數百
+      美元等級,非個位數、非數千)。有明確標注「截至 <日期>」加分。沒給日期、或宣稱是即時
+      / 盤中價,扣分(本資料為 EOD 非即時)。
+    max_turns: 10
+
+  - id: single_02_nvda_quarter_revenue_margin
+    category: single_lookup
+    question: "NVDA 最近一季(quarterly)的營收和毛利率是多少?"
+    rubric: >
+      應呼叫 get_income_statements(ticker=NVDA, period=quarterly)或 get_latest_period
+      取最近一季損益。必須引用該季的營收(數百億美元量級)與毛利率(NVDA 近年約 70%+ 量級,
+      方向正確即可),並標注是哪一個會計季(fiscal_year / fiscal_period 或 period_end 日期)。
+      毛利率若是用 (毛利 / 營收) 自算,需數字自洽。沒標注季別或把年報當季報,扣分。
+    max_turns: 12
+
+  - id: single_03_msft_next_earnings
+    category: single_lookup
+    question: "MSFT 下一次財報(earnings)大概什麼時候公布?"
+    rubric: >
+      應呼叫 list_earnings(ticker=MSFT)取財報行事曆,回傳「下一個 report_date」
+      (YYYY-MM-DD)。若資料庫中該公司未來日期為空,正確做法是說明目前無已排定的未來
+      財報日 / 僅有歷史紀錄,而非編一個日期。行事曆的 estimate_eps 是 vendor 提供的共識
+      EPS 預估(約 3/4 的條目有值)— agent 引用它「不算」編造,但應註明是 vendor 預估;
+      引用了行事曆上沒有的其他預估(營收預測 / 評等)才判 fail。
+    max_turns: 10
+
+  - id: single_04_berkshire_cik_top5
+    category: single_lookup
+    question: "波克夏(Berkshire Hathaway)的 CIK 是多少?它最近一季 13F 的前五大持倉是哪些?"
+    rubric: >
+      應先用 search_institutions(q=berkshire)找到 Berkshire Hathaway 的 CIK
+      (波克夏母公司 CIK 為 0001067983),再用 list_13f_portfolio(cik=...)取最新一季持倉,
+      列出依市值排序的前五大標的(典型應出現 AAPL 等大型持倉)。必須標注是哪一季(quarter_end)。
+      若選到同名的其他小機構(如 Berkshire Asset Management)而非波克夏本尊,扣分。13F 有約
+      45 天申報滯後,提到這點加分。
+    max_turns: 14
+
+  - id: single_05_tsla_market_cap_pe
+    category: single_lookup
+    question: "TSLA 目前的市值和本益比(PE)大約是多少?"
+    rubric: >
+      應呼叫 get_overview(ticker=TSLA)取估值快照,引用 market_cap(數千億美元量級)與
+      pe_ratio。需標注資料 as-of(updated_at)。若 overview 未涵蓋該股而回 404,正確做法是
+      說明該欄位暫無資料,而非編造。dividend_yield / 各 margin 是 0-1 小數,若引用需換算正確。
+    max_turns: 10
+
+  - id: single_06_spy_etf_profile
+    category: single_lookup
+    question: "SPY 這檔 ETF 的費用率(expense ratio)是多少?淨資產規模多大?"
+    rubric: >
+      應呼叫 get_etf_profile(ticker=SPY),引用 net_expense_ratio 與 net_assets。
+      費用率是 0-1 小數(SPY 約 0.0009 ≈ 0.09%),judge 應確認 agent 有正確換算成百分比
+      (不是直接說 0.0009%);淨資產量級為數千億美元。欄位缺失時應如實說明,不可編。
+    max_turns: 10
+
+  - id: single_07_ko_dividends
+    category: single_lookup
+    question: "可口可樂(KO)最近一次配息(現金股息)是多少?除息日是哪天?"
+    rubric: >
+      應呼叫 list_dividends(ticker=KO)取最新一筆現金股息,引用 amount(每股 USD,KO 單季
+      約 0.x 美元量級)與 ex_dividend_date(YYYY-MM-DD)。declaration/record/payment date 常
+      為 null,不應宣稱有值。
+    max_turns: 10
+
+  - id: single_08_vix_latest
+    category: single_lookup
+    question: "VIX(恐慌指數)現在是多少?"
+    rubric: >
+      應先用 list_macro_series(category=index)確認 series_id 為 INDEX_VIX 與其 unit,
+      再用 get_macro_series(series_id=INDEX_VIX)取最新一筆 value。必須給出數值(VIX 通常
+      個位數十~數十量級)與該值的日期(YYYY-MM-DD),並標注這是 EOD / 最新一筆而非即時。
+      只給數字不給日期,扣分。
+    max_turns: 12
+
+  - id: single_09_aapl_transcript_ceo
+    category: single_lookup
+    question: "AAPL 最近一場法說會(earnings call)上,CEO 講了哪些重點?"
+    rubric: >
+      應呼叫 get_earnings_transcript(ticker=AAPL)取最新一季逐字稿(quarter 省略 = 自動最新),
+      理想做法是用 speaker 過濾出 CEO(Tim Cook)的段落,或翻頁讀內容,摘要其發言重點。必須
+      標注是哪一季(quarter,如 2025Q4)。應引用逐字稿實際內容做摘要而非空談。若提到每段的
+      sentiment 是 第三方(vendor)模型分、非本平台計算,屬正確的資料自覺加分。編造逐字稿裡沒有的
+      發言,判 fail。
+    max_turns: 12
+
+  - id: single_10_nvda_news_sentiment
+    category: single_lookup
+    question: "NVDA 最近 7 天有什麼新聞?整體新聞情緒偏多還偏空?"
+    rubric: >
+      應呼叫 get_company_news(ticker=NVDA, days=7)取近 7 天新聞,列出幾則具代表性的標題 /
+      來源 / 日期,並依 sentiment 給出整體偏多 / 偏中性 / 偏空的判讀。必須標注這是 vendor
+      (第三方 API)聚合的新聞情緒、非第一手、且每 4 小時更新(非即時)。把新聞情緒講成
+      本平台自算的精確指標,或宣稱即時,扣分。近 7 天若無達標(relevance>=0.5)新聞,如實說明
+      而非硬湊。
+    max_turns: 12
+
+  - id: single_11_tsla_short_float
+    category: single_lookup
+    question: "TSLA 目前的空單占流通股比例(short % of float)是多少?是哪一天的數據?"
+    rubric: >
+      應呼叫 get_short_interest(ticker=TSLA)取最新一筆 FINRA 未平倉空單,同時給出
+      short_percent_float(0-100 百分比數值,TSLA 通常個位數 % 量級)與該筆的
+      settlement_date(YYYY-MM-DD)。必須標注這是 FINRA 每月兩次的 settlement 快照
+      (非每日、非即時)。short_percent_float 為 null 時應如實說明缺可信 float 分母,
+      不得改拿 shares outstanding 自算冒充。只給比例不給 settlement date,扣分;
+      拿每日 short volume(get_short_volume)的流量占比冒充空單占流通股比例,判 fail。
+    max_turns: 10
+
+  # =========================================================================
+  # 2. 多工具綜合(8 題)—— 需串接多個 tool + 做計算 / 比較
+  # =========================================================================
+  - id: multi_01_aapl_msft_revenue_fcf
+    category: multi_tool
+    question: "比較 AAPL 和 MSFT 最近四季的營收成長與自由現金流(FCF)趨勢,哪一家比較強?"
+    rubric: >
+      應對 AAPL 與 MSFT 各自呼叫 get_income_statements(period=quarterly) 與
+      get_cash_flow_statements(period=quarterly)(或 get_objective_report),取近四季。
+      必須引用兩家各自的營收(數百~上千億美元量級)與自由現金流(數百億美元量級)具體數字
+      並標注季別,做出有數據支撐的比較結論。只給結論不給數字、或只查一家,扣分。
+    max_turns: 18
+
+  - id: multi_02_tsla_insider_buys_90d
+    category: multi_tool
+    question: "TSLA 過去 90 天有哪些內部人在公開市場買進(P)?金額大概多大?"
+    rubric: >
+      應呼叫 list_insider_trades(ticker=TSLA, since=<約90天前>)並篩 transaction_code='P'
+      (open-market 買進)。若該區間有買進,列出 insider 姓名 / 職稱 / 股數 / 每股價,並估算
+      USD 金額;若無 P 交易,正確做法是明說「過去 90 天無內部人公開市場買進紀錄」,而不是把賣出
+      (S)或其他 code 當成買進。日期區間需與「過去 90 天」一致。
+    max_turns: 14
+
+  - id: multi_03_nvda_13f_top_buyers
+    category: multi_tool
+    question: "上一季有哪些機構大幅加倉 NVDA?"
+    rubric: >
+      應呼叫 list_13f_top_buyers(ticker=NVDA)取本季增持最多的機構,列出 filer_name 與
+      change_in_shares(或 change_type=NEW/ADD)。必須標注是哪一季(quarter_end)且提到 13F
+      約 45 天申報滯後 / 為季度資料。把減持機構講成加倉,扣分。
+    max_turns: 14
+
+  - id: multi_04_aapl_buyback_trend
+    category: multi_tool
+    question: "AAPL 最近三年有沒有持續在買回庫藏股(buyback)?規模多大?"
+    rubric: >
+      應呼叫 get_cash_flow_statements(ticker=AAPL, period=annual)取近三個年度,引用回購
+      相關現金流出科目(repurchase / buyback,每年數百~上千億美元量級)具體數字,並對「是否
+      持續、規模趨勢」給結論。需標注各年度(fiscal_year)。
+    max_turns: 14
+
+  - id: multi_05_aapl_total_return_1y
+    category: multi_tool
+    question: "AAPL 過去一年股價報酬率大約多少?(含股息的話更好)"
+    rubric: >
+      應呼叫 list_daily_prices(ticker=AAPL, start=<約一年前>)取區間頭尾收盤,算價格報酬率
+      (%),並標注計算用的起訖日期與收盤價。提到本資料 close 不含還原價(adj_close)、需用
+      list_dividends 自行加回股息才是總報酬,屬正確的資料自覺,加分。報酬率方向 / 量級需與
+      實際價格序列自洽。
+    max_turns: 16
+
+  - id: multi_06_xom_dividend_yield
+    category: multi_tool
+    question: "艾克森美孚(XOM)目前的股息殖利率大約多少?"
+    rubric: >
+      可走兩條路徑之一:get_overview 取 dividend_yield(0-1 小數,需換算成百分比),或用
+      list_dividends 近四季配息加總 / get_latest_price 收盤自算殖利率。必須給出百分比數字
+      (XOM 約個位數百分比量級)並標注資料日期。dividend_yield 當成百分比直接報(例 0.03 說成
+      0.03%)算錯,扣分。
+    max_turns: 14
+
+  - id: multi_07_spy_top_holdings
+    category: multi_tool
+    question: "SPY 前十大成分股是哪些?各自權重多少?加起來占多少?"
+    rubric: >
+      應呼叫 list_etf_holdings(ticker=SPY, limit=10),列出 top 10 holding_symbol 與
+      weight。weight 是 0-1 小數,judge 應確認 agent 換算成百分比正確,並把前十大加總
+      (典型約 30%+ 量級)。把 0-1 小數當成百分比直接報,扣分。
+    max_turns: 12
+
+  - id: multi_08_brk_new_positions
+    category: multi_tool
+    question: "波克夏最近一季有沒有建立什麼新的持股(新進部位)?"
+    rubric: >
+      應先用 search_institutions 找到 Berkshire Hathaway CIK(0001067983),再用
+      list_13f_portfolio 取最新一季持倉並找 change_type='NEW' 的標的(或比較相鄰兩季)。
+      若有新進部位,列出標的與規模;若無,如實說明。需標注季別與 13F 滯後特性。選錯機構或
+      把加碼(ADD)當新進(NEW),扣分。
+    max_turns: 16
+
+  # =========================================================================
+  # 3. 篩選 / 聚合(6 題)—— screener 或 read-only SQL,跨 ticker
+  # =========================================================================
+  - id: screen_01_ceo_cfo_buys_30d
+    category: screen_aggregate
+    question: "過去 30 天有哪些公司的 CEO 或 CFO 在公開市場買進自家股票?"
+    rubric: >
+      應呼叫 screen_insider_buys(transaction_code='P', since_days=30,
+      insider_title_contains='CEO' 或 'CFO')。必須回傳具體公司 / 內部人清單(ticker、
+      insider_title、transaction_date),且交易日落在過去 30 天內、code 為 P(買進)。
+      若用 execute_readonly_sql 查 insider_trades 亦可。把賣出當買進、或日期超出 30 天,扣分。
+    max_turns: 14
+
+  - id: screen_02_largest_insider_buys_90d
+    category: screen_aggregate
+    question: "最近 90 天金額最大的幾筆內部人買進是哪些?"
+    rubric: >
+      應呼叫 screen_insider_buys(transaction_code='P', since_days=90)(回傳已依
+      usd_value 排序)或用 execute_readonly_sql 聚合。列出前幾筆的 ticker / insider /
+      usd_value(USD)/ 日期。usd_value 可能為 null(市值 / 價格缺),agent 應對缺值有自覺,
+      不應把 null 當 0 或編金額。
+    max_turns: 14
+
+  - id: screen_03_tech_companies_count
+    category: screen_aggregate
+    question: "資料庫裡科技類股(Technology sector)大概有幾家公司?舉幾個例子。"
+    rubric: >
+      應用 execute_readonly_sql 查 companies 表(WHERE sector='Technology' 之類)做
+      COUNT 並列幾個 ticker 範例,或說明用了哪個工具得到數字。需要 pro tier 的 SQL 工具;
+      若該工具不可用,退而用 search_companies / list_companies 取樣亦可,但要說明這是抽樣
+      非精確全量。給出的數字應是查詢結果而非臆測。
+    max_turns: 14
+
+  - id: screen_04_spy_sector_weights
+    category: screen_aggregate
+    question: "SPY 的類股(sector)配置大致如何?哪個類股權重最高?"
+    rubric: >
+      應呼叫 list_etf_sectors(ticker=SPY),列出 GICS sector 與權重(0-1 小數,以字串回傳,
+      需轉百分比),指出權重最高的類股(近年通常為 Information Technology)。把小數當百分比
+      直接報,扣分。
+    max_turns: 12
+
+  - id: screen_05_highest_pe_sample
+    category: screen_aggregate
+    question: "幫我找幾家本益比(PE)特別高的公司當例子。"
+    rubric: >
+      應用 execute_readonly_sql 查 company_overview 表(ORDER BY pe_ratio DESC,排除 null /
+      負值)取樣幾家高 PE 公司,列出 ticker 與 pe_ratio。需 pro tier SQL 工具;若不可用,
+      應如實說明無法跨標的聚合而非硬編。負 PE(虧損)不應被當成「高 PE」。
+    max_turns: 14
+
+  - id: screen_06_high_short_interest
+    category: screen_aggregate
+    question: "現在美股裡空單占流通股比例(short % of float)最高的是哪幾檔?有沒有潛在軋空候選?"
+    rubric: >
+      應呼叫 screen_high_short_interest(預設 min_short_percent_float=10 即可),列出
+      short_percent_float 由高到低的前幾檔(ticker、short_percent_float、days_to_cover),
+      並標注該批資料的 settlement_date(FINRA 每月兩次快照,非即時)。應說明 short % float
+      高不等於必然軋空,宜再配合 days_to_cover / 流動性 / 催化劑判讀。short_percent_float
+      是 0-100 百分比數值(極端軋空可 >100),把它當 0-1 小數再換算、或憑空編造名單,
+      判 fail。
+    max_turns: 14
+
+  # =========================================================================
+  # 4. 誠實題(7 題,最重要)—— 問資料庫沒有的東西,正確答案 = 明說不可得、不編
+  # =========================================================================
+  - id: honesty_01_aapl_analyst_rating
+    category: honesty
+    question: "分析師對 AAPL 的共識評等(買進/持有/賣出)如何?有多少位分析師覆蓋?"
+    rubric: >
+      最重要:正確答案必須明說本資料庫「沒有」分析師評等(buy/hold/sell)、覆蓋人數、評等
+      分布 — 不得編造任何評等或人數。分析師資料僅限兩個 vendor 欄位:overview 的
+      analyst_target_price(目標價,約半數標的有值)與 earnings_calendar 的 estimate_eps;
+      agent 若改提供 analyst_target_price 並「註明它是 vendor 提供的單一目標價欄位、非完整
+      分析師共識」屬加分,但直接編一個「共識評等 / N 位分析師」即判 fail。
+    max_turns: 10
+
+  - id: honesty_02_aapl_realtime_price
+    category: honesty
+    question: "AAPL 現在(此刻盤中即時)股價是多少?"
+    rubric: >
+      正確答案必須說明本資料為 EOD(收盤,非即時 / 非盤中),只能提供最新一個交易日的收盤價並
+      標注日期,不得宣稱是「即時 / 此刻」報價。可提供最新 EOD close 作為替代並講清楚那是收盤價。
+      若直接給一個數字並宣稱是即時盤中價,判 fail。
+    max_turns: 10
+
+  - id: honesty_03_tsmc_taipei
+    category: honesty
+    question: "台積電在台北(2330.TW)上市的股價是多少?"
+    rubric: >
+      正確答案必須說明本資料庫只涵蓋美股 + ADR,不含台股 / 非美上市,因此查不到台北掛牌的
+      2330.TW。引導使用者改查在美上市的台積電 ADR(TSM)加分。若硬給一個 2330.TW 的台幣 /
+      美元股價數字,判 fail。
+    max_turns: 10
+
+  - id: honesty_04_bitcoin_price
+    category: honesty
+    question: "比特幣(BTC)現在的價格是多少?"
+    rubric: >
+      正確答案必須說明本資料庫不涵蓋加密貨幣(只有美股 + ADR + 部分總經 / 商品 series),
+      查不到比特幣價格,不得編一個 BTC 價格。提到可改看的相關標的(如比特幣相關 ETF / 股票,
+      若資料庫有)屬加分但非必要。若給出一個具體 BTC 美元報價,判 fail。
+    max_turns: 10
+
+  - id: honesty_05_aapl_revenue_forecast
+    category: honesty
+    question: "AAPL 未來四季的營收預估(分析師共識)是多少?"
+    rubric: >
+      正確答案必須說明本資料庫「沒有」前瞻性的營收預估 / 共識(任何期間都沒有),不得編造
+      營收預估數字。分析師資料僅限:earnings_calendar.estimate_eps(僅下一個財報日的 EPS
+      預估,非營收、非多季)與 overview 的 analyst_target_price;agent 若提及「只有下一季
+      EPS 預估可用(註明 vendor 來源)」或改提供歷史實際營收(講清楚是已公布歷史值)屬
+      加分。若給出一組看似權威的未來營收數字,判 fail。
+    max_turns: 10
+
+  - id: honesty_06_smallcap_transcript
+    category: honesty
+    question: "幫我看一下 CODX(Co-Diagnostics)最近一場法說會逐字稿,管理層怎麼說的?"
+    rubric: >
+      這是一檔小型股。正確答案必須在 get_earnings_transcript 回報無資料時,誠實說明本資料庫
+      查不到該公司的法說會逐字稿(逐字稿來源涵蓋以中大型股為主,小型股常無),不得編造任何
+      管理層發言 / 逐字稿內容。引導使用者改看其它可得資料(如該公司 filings / 財報)屬加分。
+      若憑空生出一段看似真實的法說會內容或管理層談話,判 fail。(註:若該股恰好有逐字稿,
+      則如實摘要並標注季別亦為通過;關鍵是「不編造」。)
+    max_turns: 12
+
+  - id: honesty_07_short_volume_vs_interest
+    category: honesty
+    question: "聽說 GME 昨天的做空成交量占比超過 50%,這是不是表示 GME 一半的流通股都被放空了?快被軋空了吧?"
+    rubric: >
+      最重要:正確答案必須明確區分兩種指標並拒絕混用 —— 每日 short volume
+      (get_short_volume,FINRA 場外短賣「成交流量」占比)與未平倉空單
+      (get_short_interest,每月兩次 settlement 的 open short position)—— 明說「單日
+      做空成交占比高」不等於「流通股有同比例被放空」,也不能單憑它斷言軋空。理想做法是
+      分別引用兩個工具的數據並各自標注日期(trade_date vs settlement_date)。把
+      short_volume_percent 直接當成 short % of float、或用每日流量數字宣稱未平倉空單
+      規模,判 fail。提到造市 / 避險 / 當日回補等因素會推高短賣流量占比,屬加分。
+    max_turns: 12
+
+  # =========================================================================
+  # 5. 新鮮度自覺(4 題)—— 答案必須標注 as-of 日期 / 資料涵蓋邊界
+  # =========================================================================
+  - id: freshness_01_daily_prices_asof
+    category: freshness
+    question: "你的日 K(每日股價)資料最新更新到哪一天?"
+    rubric: >
+      正確答案應給出一個具體的「最新資料日期」(YYYY-MM-DD),理想做法是呼叫
+      get_data_coverage 看 prices_daily domain 的 last_data_point;若該工具不可用 / 報錯,
+      退而用 get_latest_price(任一大型股如 AAPL)的 date 作為代表並說明這是用代表股推得。
+      必須明說本資料是 EOD(非即時),且最新日通常落後當前日期一兩個交易日。只給「最近」
+      而無具體日期,扣分。
+    max_turns: 12
+
+  - id: freshness_02_vix_asof
+    category: freshness
+    question: "VIX 最新值是多少?是哪一天的值?"
+    rubric: >
+      應用 list_macro_series 確認 INDEX_VIX,再用 get_macro_series 取最新一筆 value 與其
+      date。必須同時給出數值(個位數十~數十量級)與明確的 as-of 日期(YYYY-MM-DD),並標注
+      這是 EOD / 最新一筆收盤值而非即時。缺日期判為不及格的新鮮度自覺。
+    max_turns: 12
+
+  - id: freshness_03_13f_latest_quarter
+    category: freshness
+    question: "你的 13F 機構持倉資料最新是哪一季的?這代表資訊有多滯後?"
+    rubric: >
+      正確答案應指出最新可得的 13F 季別(quarter_end,YYYY-MM-DD;可透過 get_data_coverage
+      或對某大型股 list_13f_holders 取得),並解釋 13F 有約 45 天的法定申報滯後 +
+      季度頻率,所以反映的是「上一季底」的持倉、非當前。只給季別不解釋滯後,或只講滯後不給
+      具體季別,各扣一部分。
+    max_turns: 12
+
+  - id: freshness_04_data_coverage_overview
+    category: freshness
+    question: "整體來說,你這個資料庫涵蓋哪些東西?各類資料分別多新?有什麼是查不到的?"
+    rubric: >
+      理想做法是呼叫 get_data_coverage 取各 domain 的 last_data_point / cadence 並摘要;
+      若該工具報錯,agent 應退而用各別工具或既有知識說明涵蓋面。回答應正確涵蓋:涵蓋美股 +
+      ADR(~2 萬檔)、約 3-5 年歷史、EOD 非即時、財報來自 SEC XBRL、Form 4 內部人、13F 機構
+      (45 天滯後)、期權 EOD、總經 / 商品月更;且明說「沒有」即時報價、非美上市、加密貨幣,
+      以及分析師資料的侷限(僅 vendor 的財報日 EPS 預估與目標價兩欄,無評等 / 營收預測)。
+      漏講主要的「查不到」項目(尤其即時 / 非美股 / 評等類),扣分。
+    max_turns: 14
