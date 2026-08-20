@@ -20,10 +20,18 @@ def main() -> None:
         return
 
     # Streamable HTTP:對外服務。Auth 由 FastMCP verifier 處理(見 _build_auth)。
+    #
+    # stateless_http=True:每個請求自成一體,server 端不保存 MCP session。
+    # 有狀態模式下 client 會拿著 Mcp-Session-Id 回來,而該 session 只存在於「當初
+    # 建立它的那個 process」的記憶體裡 —— redeploy 換 pod、或日後擴到多 replica,
+    # client 的舊 session id 就會撲空(HTTP 404 / 需重新握手)。無狀態模式沒有黏著
+    # 問題,任何 replica 都能接任何請求;代價是不支援 server→client 的主動推送
+    # (resumability / SSE 續傳),本 server 全是 request-response 的 tool 呼叫,用不到。
     mcp.run(
         transport="streamable-http",
         host="0.0.0.0",
         port=settings.port,
+        stateless_http=True,
     )
 
 
