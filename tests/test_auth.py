@@ -10,6 +10,8 @@ HTTP transport 的實際攔截(401 / 200)由 FastMCP 框架負責,框架自己�
 我們不在這裡覆寫;這裡只驗 verifier 回 AccessToken vs None。
 """
 
+import time
+from dataclasses import replace
 from unittest.mock import patch
 
 import httpx
@@ -19,8 +21,14 @@ from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
 from trading_agent_mcp import tools as _tools  # noqa: F401 —— 觸發 @mcp.tool 註冊
-from trading_agent_mcp.auth import AUTHORIZE_PATH, PerUserTokenVerifier, _scopes_for_tier
+from trading_agent_mcp.auth import (
+    AUTHORIZE_PATH,
+    CACHE_MAX_SIZE,
+    PerUserTokenVerifier,
+    _scopes_for_tier,
+)
 from trading_agent_mcp.server import _build_auth, mcp
+from trading_agent_mcp.settings import Settings
 
 # authorize endpoint 的完整 URL(base_url + path),respx 用來比對。
 _API_BASE = "http://test-api"
@@ -280,6 +288,114 @@ async def test_expired_cache_does_not_fall_back() -> None:
         with respx.mock as mock:
             mock.post(_AUTHORIZE_URL).respond(500)
             assert await v.verify_token("k") is None
+    finally:
+        await v.aclose()
+
+
+# ============================================================
+# 韌性:httpx transport / 快取上限 / 寬限期
+# ============================================================
+
+
+def test_client_uses_retrying_transport_with_keepalive_limits() -> None:
+    """AsyncClient 掛的是帶 retries 的 AsyncHTTPTransport,limits 也確實生效。
+
+    limits 必須傳進 transport —— 傳給 AsyncClient 的 limits 在有自訂 transport 時
+    會被整個忽略,這個測試就是釘住那個坑。
+    """
+    v = PerUserTokenVerifier(api_base_url=_API_BASE, service_token="svc")
+    transport = v._client._transport
+    assert isinstance(transport, httpx.AsyncHTTPTransport)
+    pool = transport._pool
+    assert pool._retries == 2
+    assert pool._max_keepalive_connections == 10
+    assert pool._keepalive_expiry == 30.0
+
+
+async def test_cache_evicts_oldest_beyond_max_size(
+    verifier: PerUserTokenVerifier,
+) -> None:
+    """快取有上限:塞滿 + 1 把 key 後,最舊的被淘汰、長度不超過 CACHE_MAX_SIZE。"""
+    with respx.mock as mock:
+        mock.post(_AUTHORIZE_URL).respond(
+            200, json={"ok": True, "user_id": "u", "tier": "free"}
+        )
+        for i in range(CACHE_MAX_SIZE + 1):
+            assert await verifier.verify_token(f"key-{i}") is not None
+
+    assert len(verifier._cache) == CACHE_MAX_SIZE
+    assert "key-0" not in verifier._cache  # 最舊 —— 被擠掉
+    assert f"key-{CACHE_MAX_SIZE}" in verifier._cache  # 最新 —— 還在
+
+
+async def test_cache_reinsert_refreshes_position(
+    verifier: PerUserTokenVerifier,
+) -> None:
+    """重新驗證會把 key 移到最新端 —— 活躍的 key 不會因為「先來的」先被淘汰。"""
+    with respx.mock as mock:
+        mock.post(_AUTHORIZE_URL).respond(
+            200, json={"ok": True, "user_id": "u", "tier": "free"}
+        )
+        for i in range(CACHE_MAX_SIZE):
+            assert await verifier.verify_token(f"key-{i}") is not None
+        # key-0 再驗一次 → 移到最新端;再塞一把新的,被淘汰的應是 key-1。
+        assert await verifier.verify_token("key-0") is not None
+        assert await verifier.verify_token("fresh") is not None
+
+    assert len(verifier._cache) == CACHE_MAX_SIZE
+    assert "key-0" in verifier._cache
+    assert "key-1" not in verifier._cache
+
+
+def test_default_grace_window_is_thirty_minutes() -> None:
+    """寬限期預設 30 分鐘(settings 與 verifier 建構子預設值一致)。"""
+    assert Settings().mcp_authorize_cache_ttl == 1800.0
+    v = PerUserTokenVerifier(api_base_url=_API_BASE, service_token="svc")
+    assert v._cache_ttl == 1800.0
+
+
+def test_build_auth_passes_settings_cache_ttl() -> None:
+    """_build_auth 把 settings 的寬限期傳進 verifier(不是寫死)。"""
+    with patch("trading_agent_mcp.server.settings") as s:
+        s.mcp_per_user_auth = True
+        s.mcp_api_base_url = _API_BASE
+        s.mcp_api_auth_token = "service-token"
+        s.mcp_authorize_cache_ttl = 1800.0
+        auth = _build_auth()
+    assert isinstance(auth, PerUserTokenVerifier)
+    assert auth._cache_ttl == 1800.0
+
+
+async def test_grace_window_boundary() -> None:
+    """寬限期窗口內 5xx 續用、窗口外 5xx 踢掉。
+
+    不真的等 30 分鐘 —— 直接改快取項的 expires_at 模擬「剩 1 秒」/「過期 1 秒」。
+    """
+    v = PerUserTokenVerifier(
+        api_base_url=_API_BASE, service_token="svc", cache_ttl=1800.0
+    )
+    try:
+        with respx.mock as mock:
+            mock.post(_AUTHORIZE_URL).respond(
+                200, json={"ok": True, "user_id": "u7", "tier": "pro"}
+            )
+            assert await v.verify_token("k") is not None
+
+        # 窗口內(還剩 1 秒)→ 沿用快取。
+        v._cache["k"] = replace(v._cache["k"], expires_at=time.monotonic() + 1.0)
+        with respx.mock as mock:
+            mock.post(_AUTHORIZE_URL).respond(503)
+            stale = await v.verify_token("k")
+        assert stale is not None
+        assert stale.client_id == "u7"
+        assert stale.claims.get("stale") is True
+
+        # 窗口外(已過期)→ 不放行,並清掉該項。
+        v._cache["k"] = replace(v._cache["k"], expires_at=time.monotonic() - 1.0)
+        with respx.mock as mock:
+            mock.post(_AUTHORIZE_URL).respond(503)
+            assert await v.verify_token("k") is None
+        assert "k" not in v._cache
     finally:
         await v.aclose()
 

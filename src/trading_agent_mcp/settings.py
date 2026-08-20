@@ -27,10 +27,12 @@ class Settings(BaseSettings):
     # stdio 本機開發走 skip_auth,不受此影響。要關掉設環境變數 MCP_PER_USER_AUTH=false。
     mcp_per_user_auth: bool = True
 
-    # PerUserTokenVerifier 的 in-process 快取 TTL(秒)。
+    # PerUserTokenVerifier 的 in-process 快取「寬限期」(秒),預設 30 分鐘。
     # 只快取「validity / tier」做為 authorize 短暫失敗時的 fallback,
     # 不取代每次 POST(計量與配額仍以後端為準)。詳見 auth.py。
-    mcp_authorize_cache_ttl: float = 20.0
+    # 語意:後端短暫不可用(重啟 / 網路抖動 / 5xx)時,最近 30 分鐘內驗過的 key
+    # 可續用,不會整批 session 被踢掉;已知失效(ok=false)仍即刻清快取踢人。
+    mcp_authorize_cache_ttl: float = 1800.0
 
     # Streamable HTTP transport port(Zeabur 會以 $PORT 蓋過)
     port: int = 8000

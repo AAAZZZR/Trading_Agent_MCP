@@ -42,6 +42,12 @@ CONNECT_ACTION = "connect"
 # 後端 authorize endpoint 的相對路徑。
 AUTHORIZE_PATH = "/api/mcp/authorize"
 
+# fallback 快取的條目上限。長時間執行的 server 若不設限,每把出現過的 key 都會
+# 永久留在 dict 裡(輪替 / 撤銷過的 key 也不例外),記憶體只增不減。1000 把 key
+# 遠超過實際同時在線的使用者數,夠用;手寫淘汰而不引入 cachetools —— 一個 dict
+# 就能做到,不值得多一個依賴。
+CACHE_MAX_SIZE = 1000
+
 
 def _scopes_for_tier(tier: str) -> list[str]:
     """把後端回的 tier 轉成 OAuth scopes。
@@ -74,21 +80,41 @@ class PerUserTokenVerifier(TokenVerifier):
 
       取捨結論:正確性(計量 + 配額)> 微優化。配額永遠由後端在每次成功呼叫時即時
       enforce;快取只在後端「暫時聯絡不上」時提供有限的韌性,不會放行「已知失效」的 key。
+
+      寬限期預設 30 分鐘(settings.mcp_authorize_cache_ttl):後端 redeploy / 短暫
+      5xx 時,最近半小時內驗過的 key 仍可續用,agent 的長工作階段不會整批被踢。
+      條目上限 CACHE_MAX_SIZE,超過從最舊端淘汰,避免長跑 process 記憶體只增不減。
     """
 
     def __init__(
         self,
         api_base_url: str,
         service_token: str,
-        cache_ttl: float = 20.0,
+        cache_ttl: float = 1800.0,
     ) -> None:
         super().__init__()
         # 共用一個 AsyncClient(connection pool);service token 直接烘進 header,
         # base_url 去尾斜線避免雙斜線。
+        #
+        # 自訂 transport 的兩個理由:
+        #   retries=2      —— 連線層(connect / DNS)的瞬斷自動重試,不必讓一次
+        #                     TCP 抖動就把使用者踢成 401。注意這只重試「建立連線」
+        #                     失敗,已送出的 POST 不會重送(計量不會重複計)。
+        #   limits         —— keepalive 連線池:authorize 每個請求都打一次後端,
+        #                     維持長連線省掉 TCP + TLS handshake。
+        # ⚠️ limits 必須傳給 transport:AsyncClient(limits=...) 只在「用預設
+        #    transport」時生效,一旦帶自訂 transport 就會被整個蓋掉、形同沒設。
         self._client = httpx.AsyncClient(
             base_url=api_base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {service_token}"},
             timeout=10.0,
+            transport=httpx.AsyncHTTPTransport(
+                retries=2,
+                limits=httpx.Limits(
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30.0,
+                ),
+            ),
         )
         self._cache_ttl = cache_ttl
         # token → 上次成功驗證的結果。只在 authorize 暫時失敗時當 fallback。
@@ -131,11 +157,7 @@ class PerUserTokenVerifier(TokenVerifier):
         if data.get("ok") is True:
             user_id = str(data.get("user_id", "unknown"))
             tier = str(data.get("tier", "free"))
-            self._cache[token] = _CachedAuth(
-                user_id=user_id,
-                tier=tier,
-                expires_at=time.monotonic() + self._cache_ttl,
-            )
+            self._remember(token, user_id, tier)
             return AccessToken(
                 token=token,
                 client_id=user_id,
@@ -152,6 +174,23 @@ class PerUserTokenVerifier(TokenVerifier):
         # 清掉任何快取,確保不會用舊的 validity 放行已失效的 key。
         self._cache.pop(token, None)
         return None
+
+    def _remember(self, token: str, user_id: str, tier: str) -> None:
+        """把成功驗證的結果寫進 fallback 快取,並維持條目上限。
+
+        dict 保有插入序,所以「先 pop 再插入」等於把這把 key 移到最新端
+        (LRU-ish:每次成功驗證都會刷新位置);超出 CACHE_MAX_SIZE 時從最舊端
+        淘汰。淘汰只影響「後端暫時失敗時能不能沿用」,不影響正常路徑
+        (正常路徑一律重打 authorize)。
+        """
+        self._cache.pop(token, None)
+        self._cache[token] = _CachedAuth(
+            user_id=user_id,
+            tier=tier,
+            expires_at=time.monotonic() + self._cache_ttl,
+        )
+        while len(self._cache) > CACHE_MAX_SIZE:
+            self._cache.pop(next(iter(self._cache)))
 
     def _fallback_from_cache(
         self, token: str, exc: Exception
