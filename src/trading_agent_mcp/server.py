@@ -7,7 +7,8 @@ Auth(`_build_auth` 決定,優先序由上到下):
      → PerUserTokenVerifier:每個 user 帶自己的 API key,直接對 SaaS 控制面 DB
        驗證(帶正向快取);計量另由 UsageMiddleware 在 tool 層非同步寫。
   2. 單一共用 token(mcp_bearer_token 非空)→ StaticTokenVerifier(舊行為 / 本機)。
-  3. 兩者皆無 → None(不啟用 auth;stdio 本機開發或無 auth 的 dev container)。
+  3. per-user 開著但兩個憑據來源都沒有 → MisconfiguredVerifier(一律 401,不 fail open)。
+  4. per-user 明確關閉且無共用 token → None(不啟用 auth;stdio 本機開發 / dev container)。
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import TokenVerifier
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
-from trading_agent_mcp.auth import PerUserTokenVerifier
+from trading_agent_mcp.auth import MisconfiguredVerifier, PerUserTokenVerifier
 from trading_agent_mcp.settings import settings
 from trading_agent_mcp.usage import UsageMiddleware
 
@@ -44,7 +45,14 @@ def _build_auth() -> TokenVerifier | None:
             }
         )
 
-    # 3. 不啟用 auth。
+    # 3. per-user 開著(這是預設值)卻沒有 DSN、也沒有共用 token —— 設定失誤。
+    #    這裡**不能**掉到下面的「不啟用 auth」:mcp_per_user_auth 為真代表這台是
+    #    要對外服務的,少設一個環境變數就把整台 server 敞開,是最糟的失敗模式。
+    #    改成一律 401(見 MisconfiguredVerifier 的 docstring)。
+    if settings.mcp_per_user_auth:
+        return MisconfiguredVerifier()
+
+    # 4. 明確關掉 per-user 又沒有共用 token —— 本機 stdio / dev container,不啟用 auth。
     return None
 
 

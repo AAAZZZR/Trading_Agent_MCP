@@ -305,6 +305,32 @@ class PerUserTokenVerifier(TokenVerifier):
             self._quota_cache.pop(next(iter(self._quota_cache)))
 
 
+class MisconfiguredVerifier(TokenVerifier):
+    """設定不全時的「一律拒絕」verifier —— 存在的唯一理由是**不要 fail open**。
+
+    情境:`mcp_per_user_auth=True`(預設值)卻沒給 `mcp_saas_database_url`,
+    而且也沒設共用的 `mcp_bearer_token`。這是部署設定失誤,但它不能被翻譯成
+    「不啟用 auth」—— 那會讓一台對外服務的 server 完全不設防,任何人都能呼叫
+    全部 tool。寧可整台拒收(operator 會立刻發現),也不要默默敞開大門。
+
+    刻意**不**在 import 期 raise:那會變成 crash-loop,連 log 都不容易撈
+    (2026-06-24 的 ETL 事故就是這樣來的)。改成照常啟動、每個請求回 401,
+    並在建構時 log 一筆點名缺哪個環境變數的 error。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        logger.error(
+            "MCP_PER_USER_AUTH is on but MCP_SAAS_DATABASE_URL is empty, and no "
+            "MCP_BEARER_TOKEN is set either — every request will be rejected with 401. "
+            "Set MCP_SAAS_DATABASE_URL (per-user mode) or MCP_BEARER_TOKEN (shared token)."
+        )
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        logger.error("rejecting request: auth is not configured (see startup error)")
+        return None
+
+
 class AuthErrorMessageMiddleware:
     """把 FastMCP 寫死的 401 文案換掉(純 ASGI middleware)。
 

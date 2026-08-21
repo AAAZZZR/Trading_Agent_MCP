@@ -136,7 +136,8 @@ you also need that API and its Postgres database — see [Trading_Agent](https:/
 |---|---|---|
 | **Per-user (SaaS)** | `MCP_PER_USER_AUTH=true` **and** `MCP_SAAS_DATABASE_URL` set | Each user sends their own API key, validated directly against the SaaS control-plane database (`MCP_SAAS_DATABASE_URL`), with a short positive cache; metering is fire-and-forget per tool call. Scopes reflect the user's tier. |
 | **Shared token** | per-user off + `MCP_BEARER_TOKEN` set | A single shared bearer (scope `tier:pro`, full access). Backwards-compatible. |
-| **No auth** | neither | No verifier — for local stdio development. |
+| **No auth** | `MCP_PER_USER_AUTH=false` and no shared token | No verifier — for local stdio development. |
+| **Misconfigured** | per-user on, but neither `MCP_SAAS_DATABASE_URL` nor `MCP_BEARER_TOKEN` set | Every request is rejected with 401 and a startup error names the missing variable. Deliberately **not** a fall-through to "no auth": a public server must never open up because one env var is missing. |
 
 - The server does **not** advertise OAuth metadata, so a 401 surfaces as a plain auth failure rather than kicking the client into an OAuth flow.
 - **Tier gating:** only `execute_readonly_sql` and `describe_table` require `tier:pro`. On a `tier:free` key they don't appear in `tools/list` and are blocked if called directly. The other 50 tools are available to free and pro.
@@ -517,7 +518,8 @@ API 與它的 Postgres——見 [Trading_Agent](https://github.com/AAAZZZR/Tradi
 |---|---|---|
 | **Per-user(SaaS)** | `MCP_PER_USER_AUTH=true` **且** `MCP_SAAS_DATABASE_URL` 有值 | 每個 user 帶自己的 API key,直接對 SaaS 控制面 DB(`MCP_SAAS_DATABASE_URL`)驗證,帶短時間的正向快取;計量改成每次 tool 呼叫非同步寫入。scope 反映 user 的 tier。 |
 | **共用 token** | per-user 關 + `MCP_BEARER_TOKEN` 非空 | 單一共用 bearer(scope `tier:pro`,完整權限)。向後相容。 |
-| **無 auth** | 兩者皆無 | 不啟用 verifier——本機 stdio 開發用。 |
+| **無 auth** | `MCP_PER_USER_AUTH=false` 且無共用 token | 不啟用 verifier——本機 stdio 開發用。 |
+| **設定失誤** | per-user 開著,但 `MCP_SAAS_DATABASE_URL` 與 `MCP_BEARER_TOKEN` 都沒設 | 一律回 401,啟動時會 log 出缺哪個變數。刻意**不**掉回「不啟用 auth」——對外的 server 絕不能因為少設一個環境變數就敞開。 |
 
 - Server **不**公告 OAuth metadata,所以 401 會直接顯示認證失敗,不會誤把 client 帶進 OAuth 流程。
 - **Tier gating:** 只有 `execute_readonly_sql` 與 `describe_table` 需要 `tier:pro`。`tier:free` 的 key 在 `tools/list` 看不到這兩個、直接呼叫也被擋。其餘 50 個 free/pro 皆可用。

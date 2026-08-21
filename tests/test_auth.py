@@ -31,6 +31,7 @@ from trading_agent_mcp.auth import (
     QUOTA_CACHE_MAX_SIZE,
     TIER_DAILY_LIMITS,
     AuthErrorMessageMiddleware,
+    MisconfiguredVerifier,
     PerUserTokenVerifier,
     _CachedQuota,
     _scopes_for_tier,
@@ -115,6 +116,23 @@ def test_per_user_without_saas_dsn_falls_back_to_static() -> None:
         s.mcp_bearer_token = "test-secret"
         auth = _build_auth()
         assert isinstance(auth, StaticTokenVerifier)
+
+
+async def test_per_user_without_dsn_or_token_rejects_instead_of_opening_up() -> None:
+    """per-user 開著卻兩個憑據來源都沒有 → 一律 401,**不可以**退回「不啟用 auth」。
+
+    這條是安全防線:mcp_per_user_auth 預設為 True,少設一個 MCP_SAAS_DATABASE_URL
+    就把整台對外 server 敞開,是最糟的失敗模式。
+    """
+    with patch("trading_agent_mcp.server.settings") as s:
+        s.mcp_per_user_auth = True
+        s.mcp_saas_database_url = ""
+        s.mcp_bearer_token = ""
+        auth = _build_auth()
+
+    assert isinstance(auth, MisconfiguredVerifier)
+    assert auth is not None
+    assert await auth.verify_token("idb_anything") is None
 
 
 def test_build_auth_passes_settings_ttls() -> None:
