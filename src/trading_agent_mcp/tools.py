@@ -9,8 +9,9 @@
 readonly Postgres 連線(`db.py`),經 sqlparse + readonly role + statement timeout
 三層防護;搭配 `describe_table` 讓 agent 先自省 schema 再下 SQL。
 
-回傳型別目前以 dict / list[dict] 起步(求覆蓋度);所有金額單位為 USD,日期為
-YYYY-MM-DD ISO 字串,除非個別 docstring 另有說明。
+回傳型別目前以 dict / list[dict] 起步(求覆蓋度);日期為 YYYY-MM-DD ISO 字串,除非個別
+docstring 另有說明。金額單位:價格 / 期權 / 市值類一律 USD;**財報三表是該公司申報原幣**
+(每列的 `reporting_currency` 為準,平台不做 FX 換算)。
 """
 
 from __future__ import annotations
@@ -327,6 +328,8 @@ async def get_filing_section(accession: str, item_code: str) -> dict[str, Any]:
 # **注意 quarterly 刻意不含 Q4** —— 多數 filer 不單獨申報 Q4,其數字隱含在全年 FY 裡
 # (Q4 ≈ FY − Q1 − Q2 − Q3),所以要 Q4 請取 annual(FY)那期。回傳列本身帶
 # fiscal_year / fiscal_period 欄位,agent 可據此辨識是哪一期。
+# 實測 prod:income_statements.fiscal_period 只有 FY / Q1 / Q2 / Q3,**一列 Q4 都沒有**。
+# 另外三表金額是申報原幣(reporting_currency),USD 佔絕大多數但非全部,ETL 不做 FX 換算。
 Period = Literal["annual", "quarterly"]
 
 
@@ -336,19 +339,27 @@ async def get_income_statements(
     period: Period | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """取得損益表(營收、毛利、營業利益、淨利、EPS 等,金額 USD),依期末由新到舊。
+    """取得損益表(營收、毛利、營業利益、淨利、EPS 等),依期末由新到舊。
 
-    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; USD-normalized.
+    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; amounts are in each filer's own reporting currency (NO FX conversion).
+
+    **幣別陷阱(必讀)**:數字是該公司**申報原幣**,平台**不做任何 FX 換算**;每一列的
+    `reporting_currency`(ISO 4217)才是該列的口徑。絕大多數是 USD,但 ADR / 外國 filer
+    會是 CAD / EUR / CNY / GBP / JPY 等。價格類 tool(`list_daily_prices` /
+    `get_latest_price` 等)一律是 USD,所以當 `reporting_currency != 'USD'` 時
+    **不要**拿價格去跟財報數字算 P/E、P/S、EV/Sales 等比率 —— 混幣別,結果無意義。
 
     Args:
         ticker: 美股代號(自動轉大寫)。
         period: "annual"(年報 FY)或 "quarterly"(季報,**僅 Q1-Q3**;Q4 隱含在 FY 裡,
-            要 Q4 請用 annual);省略 = 兩者都回。
+            要 Q4 請用 annual);省略 = 兩者都回。**DB 裡根本沒有 fiscal_period='Q4' 的列**,
+            傳 "Q4" 後端會收但永遠回空。
         limit: 最多回傳幾筆(1-200,預設 20)。
 
     Returns:
-        list[dict],每筆含 fiscal_year、fiscal_period、period_end(YYYY-MM-DD)與各項
-        財務數字(USD)。要一次拿三表合體用 `get_latest_period`。
+        list[dict],每筆含 fiscal_year、fiscal_period、period_end(YYYY-MM-DD)、
+        reporting_currency(該列金額的幣別)與各項財務數字。要一次拿三表合體用
+        `get_latest_period`。
     """
     params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
     if period is not None:
@@ -362,19 +373,25 @@ async def get_balance_sheets(
     period: Period | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """取得資產負債表(現金、應收、存貨、PPE、總資產、總負債、權益等,金額 USD),依期末由新到舊。
+    """取得資產負債表(現金、應收、存貨、PPE、總資產、總負債、權益等),依期末由新到舊。
 
-    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; USD-normalized.
+    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; amounts are in each filer's own reporting currency (NO FX conversion).
+
+    **幣別陷阱(必讀)**:數字是該公司**申報原幣**,平台**不做任何 FX 換算**;每一列的
+    `reporting_currency`(ISO 4217)才是該列的口徑。絕大多數是 USD,但 ADR / 外國 filer
+    會是 CAD / EUR / CNY / GBP / JPY 等。價格類 tool(`list_daily_prices` /
+    `get_latest_price` 等)一律是 USD,所以當 `reporting_currency != 'USD'` 時
+    **不要**拿價格去跟財報數字算 P/E、P/S、EV/Sales 等比率 —— 混幣別,結果無意義。
 
     Args:
         ticker: 美股代號(自動轉大寫)。
         period: "annual"(FY)或 "quarterly"(**僅 Q1-Q3**;Q4 隱含在 FY,要 Q4 用 annual);
-            省略 = 兩者都回。
+            省略 = 兩者都回。**DB 裡沒有 fiscal_period='Q4' 的列**,傳 "Q4" 永遠回空。
         limit: 最多回傳幾筆(1-200,預設 20)。
 
     Returns:
-        list[dict],每筆含 fiscal_year、fiscal_period、period_end(YYYY-MM-DD)與各項
-        資產負債科目(USD)。
+        list[dict],每筆含 fiscal_year、fiscal_period、period_end(YYYY-MM-DD)、
+        reporting_currency 與各項資產負債科目。
     """
     params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
     if period is not None:
@@ -388,19 +405,25 @@ async def get_cash_flow_statements(
     period: Period | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """取得現金流量表(營業現金流、capex、自由現金流、股利、回購等,金額 USD),依期末由新到舊。
+    """取得現金流量表(營業現金流、capex、自由現金流、股利、回購等),依期末由新到舊。
 
-    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; USD-normalized.
+    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; amounts are in each filer's own reporting currency (NO FX conversion).
+
+    **幣別陷阱(必讀)**:數字是該公司**申報原幣**,平台**不做任何 FX 換算**;每一列的
+    `reporting_currency`(ISO 4217)才是該列的口徑。絕大多數是 USD,但 ADR / 外國 filer
+    會是 CAD / EUR / CNY / GBP / JPY 等。價格類 tool(`list_daily_prices` /
+    `get_latest_price` 等)一律是 USD,所以當 `reporting_currency != 'USD'` 時
+    **不要**拿價格去跟財報數字算 P/E、P/S、EV/Sales 等比率 —— 混幣別,結果無意義。
 
     Args:
         ticker: 美股代號(自動轉大寫)。
         period: "annual"(FY)或 "quarterly"(**僅 Q1-Q3**;Q4 隱含在 FY,要 Q4 用 annual);
-            省略 = 兩者都回。
+            省略 = 兩者都回。**DB 裡沒有 fiscal_period='Q4' 的列**,傳 "Q4" 永遠回空。
         limit: 最多回傳幾筆(1-200,預設 20)。
 
     Returns:
-        list[dict],每筆含 fiscal_year、fiscal_period、period_end(YYYY-MM-DD)與各項
-        現金流科目(USD)。
+        list[dict],每筆含 fiscal_year、fiscal_period、period_end(YYYY-MM-DD)、
+        reporting_currency 與各項現金流科目。
     """
     params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
     if period is not None:
@@ -413,18 +436,24 @@ async def get_latest_period(
     ticker: str,
     period: Period | None = None,
 ) -> dict[str, Any]:
-    """取得最近一期的三張財報合體(income + balance + cash_flow,同一個 period_end,金額 USD)。
+    """取得最近一期的三張財報合體(income + balance + cash_flow,同一個 period_end)。
 
-    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; USD-normalized.
+    Data cadence: from SEC XBRL filings, refreshed daily 07:00 UTC for recent filers; amounts are in each filer's own reporting currency (NO FX conversion).
+
+    **幣別陷阱(必讀)**:數字是該公司**申報原幣**,平台**不做任何 FX 換算**;每一列的
+    `reporting_currency`(ISO 4217)才是該列的口徑。絕大多數是 USD,但 ADR / 外國 filer
+    會是 CAD / EUR / CNY / GBP / JPY 等。價格類 tool(`list_daily_prices` /
+    `get_latest_price` 等)一律是 USD,所以當 `reporting_currency != 'USD'` 時
+    **不要**拿價格去跟財報數字算 P/E、P/S、EV/Sales 等比率 —— 混幣別,結果無意義。
 
     Args:
         ticker: 美股代號(自動轉大寫)。
         period: "annual" 取最近一個年報期(FY);"quarterly" 取最近一季(**僅 Q1-Q3**,
-            Q4 隱含在 FY);省略 = 不限期別取最新。
+            Q4 隱含在 FY);省略 = 不限期別取最新。**DB 裡沒有 fiscal_period='Q4' 的列**。
 
     Returns:
-        dict,含 period_end(YYYY-MM-DD)與 income / balance / cash_flow 三個子物件。
-        查無財報資料 → tool error(後端 404)。
+        dict,含 period_end(YYYY-MM-DD)與 income / balance / cash_flow 三個子物件
+        (各自帶 reporting_currency)。查無財報資料 → tool error(後端 404)。
     """
     params: dict[str, Any] = {"ticker": ticker.upper()}
     if period is not None:
@@ -473,6 +502,60 @@ async def list_insider_trades(
 # Prices
 # ============================================================
 
+# ---- 不帶 start/end 時的自動回推視窗 ---------------------------------------
+#
+# 後端 /api/prices/{daily,hourly} 一律 `ORDER BY date/dt ASC` + `LIMIT`,也就是回
+# 「視窗內**最舊**的 N 筆」。舊做法是把回推視窗壓到「剛好約 limit 個交易日」,只要視窗
+# 內實際 bar 數比 limit 多一根,後端就從頭截斷、**把最新那幾根靜默丟掉** —— 跟當時
+# docstring 自稱的「回最近 N 筆」完全相反。
+#
+# 現在改成:視窗刻意給寬 → fetch 用該端點的 API 上限抓 → client 端取尾巴 N 筆。
+# 「最新一根一定在回傳裡」因此是**結構性保證**,不是靠倍率公式湊剛好:
+#   1. 送給後端的 limit 固定是 API 上限(日 K 10000 / 小時 K 20000);
+#   2. 視窗內可能存在的 bar 數被資料保留期天然封頂(日 K 5 年 ≈ 1,260 根;
+#      小時 K 60 天 x 6 ≈ 360 根),遠低於那個上限;
+#   3. 1 + 2 → 後端的 ASC+LIMIT 不會截斷,rows 就是整個視窗且 ASC,
+#      於是 `rows[-limit:]` 必然包含最新一根。
+# 視窗給寬因此不會有代價 —— 多抓到的部分本來就在保留期內、又被 client 端裁掉。
+_DAILY_FETCH_MAX = 10000  # /api/prices/daily 的 limit 上限(後端 ge=1, le=10000)
+_HOURLY_FETCH_MAX = 20000  # /api/prices/hourly 的 limit 上限(後端 ge=1, le=20000)
+_HOURLY_BARS_PER_DAY = 6  # 常規盤 60min bar;實測近 20 天全市場每交易日就是 6 根
+
+
+# auto 視窗的下限(日曆天)。純比例回推在 limit 極小時會塌成 2-3 天,遇到週末 / 連假
+# 就整個視窗掃不到任何交易日,回空 list —— 例如週一早上、日 K 尚未刷新時的 limit=1。
+# 視窗給寬完全沒有代價(fetch 用 API 上限、多的部分在 client 端被裁掉),所以直接墊到
+# 足以跨過一個週末加一天假日的長度。
+_MIN_DAILY_WINDOW_DAYS = 7
+_MIN_HOURLY_WINDOW_DAYS = 5
+
+
+def _auto_daily_start(today: date, limit: int) -> date:
+    """算日 K 自動回推的起始日:回推 ceil(limit * 1.6) 個日曆天(至少 _MIN_DAILY_WINDOW_DAYS)。
+
+    每個日曆日平均只有 5/7 ≈ 0.714 個交易日,精確界是 1.4;1.6 是**刻意給寬**,
+    連週末對齊最差的情況(例如 limit=1 而今天是週一)都還能保證視窗內交易日數 >= limit。
+    """
+    return today - timedelta(days=max(_MIN_DAILY_WINDOW_DAYS, ceil(limit * 1.6)))
+
+
+def _auto_hourly_start(now: datetime, limit: int) -> datetime:
+    """算小時 K 自動回推的起始時間。
+
+    需要的交易日數 = ceil(limit / _HOURLY_BARS_PER_DAY),再用跟日 K 同樣的 1.6 倍率
+    換成日曆天回推(至少 _MIN_HOURLY_WINDOW_DAYS 天,避免 limit 極小時視窗塌到跨不過
+    週末),最後**對齊到當日 00:00 UTC**。
+
+    對齊到整天是必要的:後端比的是 `dt >= start` 這個「時間點」,起點若落在盤中(例如
+    18:00),起始那天就只剩半天的 bar 被收進來,實際交易日數就少於上面算的那個數 ——
+    在小 limit + 週末的組合下會整個視窗掃不到任何 bar。往前對齊只會讓視窗更寬,而寬是
+    安全的(fetch 用 API 上限、payload 又被 60 天保留期封頂)。
+    """
+    trading_days = ceil(limit / _HOURLY_BARS_PER_DAY)
+    days_back = max(_MIN_HOURLY_WINDOW_DAYS, ceil(trading_days * 1.6))
+    start = now - timedelta(days=days_back)
+    return start.replace(hour=0, minute=0, second=0, microsecond=0)
+
 
 @mcp.tool(annotations=_READONLY_ANNOTATIONS)
 async def list_daily_prices(
@@ -484,35 +567,44 @@ async def list_daily_prices(
     """取得第一手每日 OHLC + 成交量(價格 USD),依日期升冪(最舊在前)。最多約 5 年歷史。
 
     這是畫長線圖 / 回測 / 算報酬率該用的日 K(直存第一手日線)。涵蓋最多約 5 年,
-    依上市時間而異(新上市股較短)。**不含還原價(adj_close)** —— 跨除權息 / 分割
-    要自行用 `list_dividends` / `list_splits` 調整。要 intraday(小時)粒度改用
-    `list_hourly_prices`。
+    依上市時間而異(新上市股較短)。**回的是 as-traded 原始價,未做分割 / 配息還原,
+    也不含 adj_close** —— 跨除權息 / 分割要自行用 `list_dividends` / `list_splits`
+    調整;底層 `prices_daily` 表本身**有** adj_close 欄位,但此 API 端點不回,真要還原價
+    請用 `execute_readonly_sql` 直接查表。要 intraday(小時)粒度改用 `list_hourly_prices`。
 
-    **拿「最近」資料的正確做法**:後端一律 date 升冪(最舊在前)再套 limit,所以
-    「縮小 limit」拿到的是**最舊**的 N 筆,不是最新的。本工具在你**不帶 start/end**
-    時會自動回推一個起始日,讓預設就回**最近約 N 筆**(N=limit);要精確區間才自己帶
-    start/end。
+    **拿「最近」資料的正確做法**:後端一律 date 升冪(最舊在前)再套 limit,所以直接
+    「縮小 limit」拿到的是**最舊**的 N 筆,不是最新的。本工具在你**不帶 start/end**時
+    會自動處理這件事:用寬視窗 + API 上限向後端取,再於本地取尾巴,因此回的是**最新**
+    N 筆(N=limit;資料不足就全給),**最新一根保證在內**。
+    反過來說,**你自己帶了 start / end 時就是後端語意** —— 該區間內**最舊**的 limit 筆,
+    工具不做任何裁切。想要某區間的最後幾筆,請縮小區間而不是縮小 limit。
 
-    Data cadence: EOD T+1, refreshed Mon-Sat ~10:00 UTC; adjusted; 5-year rolling window; NOT real-time.
+    Data cadence: EOD T+1, refreshed Mon-Sat ~10:00 UTC; as-traded (NOT split/dividend adjusted); 5-year rolling window; NOT real-time.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
-        start: 起始日期(YYYY-MM-DD),包含。省略且 end 也省略 = 自動回推,回最近約 N 筆。
+        start: 起始日期(YYYY-MM-DD),包含。省略且 end 也省略 = 自動回推,回最新 N 筆。
         end: 結束日期(YYYY-MM-DD),包含。省略 = 不設上界(取到最新)。
-        limit: 最多幾筆(1-10000,預設 2000)。省略 start/end 時同時決定回溯視窗大小。
+        limit: 最多幾筆(1-10000,預設 2000)。省略 start/end 時 = 要幾筆最新的;
+            自帶 start/end 時 = 後端在該區間內由舊往新取幾筆。
 
     Returns:
         list[dict],每筆含 ticker、date(YYYY-MM-DD)、open、high、low、close(USD)、
-        volume,date 升冪。**不含 adj_close**。只要最新一筆用 `get_latest_price`。
-        查無資料回空 list。
+        volume,date 升冪。**不含 adj_close** —— 底層 `prices_daily` 表本身有
+        adj_close 欄位,但此 API 端點不回;需要還原價請用 `execute_readonly_sql`
+        直接查表。只要最新一筆用 `get_latest_price`。查無資料回空 list。
     """
-    params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
-    # 後端是 ORDER BY date ASC + LIMIT,只給 limit 會拿到最舊 N 筆。使用者沒帶任何邊界時
-    # 自動回推起始日,把視窗收斂到約 limit 個交易日,讓預設回「最近約 N 筆」。回推倍率取
-    # 1.4(週末+假日 → 每日曆日約 0.69 交易日,1.4 略低於精確界 1.449,寧可少收幾根也
-    # 不要因視窗過大而讓 ASC+LIMIT 砍掉最新的幾根)。
+    params: dict[str, Any] = {"ticker": ticker.upper()}
     if start is None and end is None:
-        start = (date.today() - timedelta(days=ceil(limit * 1.4))).isoformat()
+        # auto 視窗:寬視窗 + API 上限 fetch + client 端取最新 N 筆。
+        # 為什麼安全,見本區塊上方 `_auto_daily_start` 前的不變量說明。
+        params["limit"] = _DAILY_FETCH_MAX
+        params["start"] = _auto_daily_start(date.today(), limit).isoformat()
+        rows = await api.get("/api/prices/daily", params=params)
+        # rows 為 date 升冪且未被後端截斷 → 尾巴 N 筆 = 最新 N 筆。
+        return rows[-limit:] if limit > 0 else []
+    # 使用者自帶區間 → 完全照後端語意轉發(該區間內最舊 limit 筆),不裁切。
+    params["limit"] = limit
     if start is not None:
         params["start"] = start
     if end is not None:
@@ -524,16 +616,19 @@ async def list_daily_prices(
 async def get_latest_price(ticker: str) -> dict[str, Any]:
     """取得最新一個交易日的第一手日 K(OHLC + 成交量,價格 USD)。
 
-    跟 `list_daily_prices` 同一個第一手日線來源(取最後一筆)。
+    跟 `list_daily_prices` 同一個第一手日線來源(取最後一筆)。價格是 as-traded 原始價,
+    未做分割 / 配息還原,**不含 adj_close** —— 底層 `prices_daily` 表有這欄但此端點不回,
+    要還原價請走 `execute_readonly_sql`。
 
-    Data cadence: EOD T+1, refreshed Mon-Sat ~10:00 UTC; adjusted; 5-year rolling window; NOT real-time.
+    Data cadence: EOD T+1, refreshed Mon-Sat ~10:00 UTC; as-traded (NOT split/dividend adjusted); 5-year rolling window; NOT real-time.
 
     Args:
         ticker: 美股代號(自動轉大寫)。
 
     Returns:
         dict,含 ticker、date(YYYY-MM-DD)、open、high、low、close(USD)、volume。
-        **不含 adj_close**。查無價格 → tool error(後端 404)。
+        **不含 adj_close**(底層 `prices_daily` 表有這欄,但此端點不回;要還原價請走
+        `execute_readonly_sql`)。查無價格 → tool error(後端 404)。
     """
     return await api.get("/api/prices/daily/latest", params={"ticker": ticker.upper()})
 
@@ -549,28 +644,37 @@ async def list_hourly_prices(
 
     粒度比 `list_daily_prices` 細,適合做 intraday 分析或 backtest 對齊。
     歷史深度有限(60 天滾動保留),要長區間請改用 `list_daily_prices`。
+    每個交易日 6 根常規盤 bar(dt 為 UTC 14:00-19:00,即美東 10:00-15:00 EDT)。
 
-    **拿「最近」資料的正確做法**:跟日 K 一樣,後端是 dt 升冪 + limit,只給 limit 拿到的是
-    **最舊**的 N 筆。本工具在你**不帶 start/end**時會自動回推一個起始時間,讓預設回**最近約
-    N 根**小時 K;要精確區間才自己帶 start/end。
+    **拿「最近」資料的正確做法**:跟日 K 一樣,後端是 dt 升冪 + limit,直接縮小 limit 拿到
+    的是**最舊**的 N 筆。本工具在你**不帶 start/end**時會用寬視窗 + API 上限取回再於本地
+    取尾巴,因此回的是**最新** N 根(不足則全給),**最新一根保證在內**。
+    **自帶 start / end 時就是後端語意** —— 該區間內**最舊**的 limit 筆,工具不裁切。
 
     Data cadence: 60-minute bars, Mon-Fri ~22:00 UTC refresh; 60-day rolling retention.
 
     Args:
         ticker: 美股代號。
         start: 起始 UTC datetime(ISO,例 "2026-05-22T13:30:00Z"),包含。省略且 end 也省略 =
-            自動回推,回最近約 N 根。
+            自動回推,回最新 N 根。
         end: 結束 UTC datetime,包含。省略 = 不設上界(取到最新)。
-        limit: 最多幾筆(1-20000,預設 5000)。省略 start/end 時同時決定回溯視窗大小。
+        limit: 最多幾筆(1-20000,預設 5000)。省略 start/end 時 = 要幾根最新的;
+            自帶區間時 = 後端在該區間內由舊往新取幾根。
+
+    Returns:
+        list[dict],每筆含 ticker、dt(UTC ISO datetime)、open、high、low、close(USD)、
+        volume,dt 升冪。查無資料回空 list。
     """
-    params: dict[str, Any] = {"ticker": ticker.upper(), "limit": limit}
-    # 同 list_daily_prices:ORDER BY dt ASC + LIMIT。沒帶邊界時自動回推起始時間,把視窗
-    # 收斂到約 limit 根小時 K(美股每交易日約 7 根 → limit/7 個交易日 → 再乘 1.4 換成日曆
-    # 天,即 limit/5 天),讓預設回「最近約 N 根」。
+    params: dict[str, Any] = {"ticker": ticker.upper()}
     if start is None and end is None:
-        start = (
-            datetime.now(timezone.utc) - timedelta(days=ceil(limit / 5))
+        # 同 list_daily_prices 的 auto 視窗策略(不變量說明見 `_auto_daily_start` 上方)。
+        params["limit"] = _HOURLY_FETCH_MAX
+        params["start"] = _auto_hourly_start(
+            datetime.now(timezone.utc), limit
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = await api.get("/api/prices/hourly", params=params)
+        return rows[-limit:] if limit > 0 else []
+    params["limit"] = limit
     if start is not None:
         params["start"] = start
     if end is not None:
@@ -989,12 +1093,13 @@ async def get_market_news(
     Args:
         topic: 按 第三方主題過濾;省略 = 全市場。**大小寫敏感的精確比對** —— 後端拿你傳的字串
             去跟文章 topics[].topic 逐字比對,對不上(含大小寫 / 拼字不同)就靜默回空 list,
-            **不是報錯**。存的是 第三方 API 的顯示標籤(Title Case,非小寫代碼),合法值:
-            "Blockchain", "Earnings", "IPO", "Mergers & Acquisitions", "Financial Markets",
-            "Economy - Fiscal Policy", "Economy - Monetary Policy", "Economy - Macro/Overall",
-            "Energy & Transportation", "Finance", "Life Sciences", "Manufacturing",
-            "Real Estate & Construction", "Retail & Wholesale", "Technology"。不確定當前實際
-            有哪些值,先不帶 topic 呼叫一次、看回傳每篇的 topics[].topic 再原樣帶回來。
+            **不是報錯**。存的是**全小寫底線代碼**(不是 Title Case 顯示標籤),實測 prod
+            目前的 15 個合法值:
+            "financial_markets", "earnings", "finance", "technology", "life_sciences",
+            "energy_transportation", "retail_wholesale", "economy_macro", "manufacturing",
+            "real_estate", "mergers_and_acquisitions", "economy_fiscal", "ipo",
+            "economy_monetary", "blockchain"。不確定當前實際有哪些值,先不帶 topic 呼叫
+            一次、看回傳每篇的 topics[].topic 再原樣帶回來。
         limit: 最多回傳幾筆(1-200,預設 20)。
 
     Returns:
