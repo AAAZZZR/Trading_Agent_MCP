@@ -649,61 +649,263 @@ async def test_get_company_news_404_raises_tool_error() -> None:
     assert "404" in str(excinfo.value)
 
 
-# ---- prices:不帶 start/end 時自動回推 start(拿最近 N 筆,非最舊 N 筆)-----------
+# ---- prices:不帶 start/end 時的 auto 視窗 —— 釘「最新一根一定在」這個不變量 --------
 #
-# 後端 ORDER BY date/dt ASC + LIMIT,只給 limit 會回最舊 N 筆;工具在無邊界時自動回推
-# start,把視窗收斂到約 N 個交易日,使「預設回最近 N 筆」成立。start 含動態日期,故不放
-# 進上面的精確比對 _CASES,獨立驗證。
+# 後端語意是 `ORDER BY date/dt ASC` + `LIMIT`,也就是回視窗內**最舊**的 N 筆。舊實作把
+# 視窗壓到「剛好約 limit 個交易日」,只要視窗內 bar 數多於 limit,最新那幾根就被後端從頭
+# 截斷、靜默丟掉 —— 而且舊測試是把同一條回推公式抄過來當斷言(套套邏輯),等於把 bug
+# 鎖住。這裡改成:自己搭一個忠實模擬後端(ASC 產生視窗內所有 bar,再套 `[:limit]`),
+# 直接斷言「回傳的最後一筆 == 模擬宇宙裡最新的那一根」。回推公式怎麼調都不影響這組測試。
 
-from datetime import date, datetime, timedelta, timezone  # noqa: E402
-from math import ceil  # noqa: E402
+from datetime import UTC, date, datetime, timedelta  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+import httpx  # noqa: E402
+
+# 2026-08-17 是週一 → 這 7 天剛好覆蓋週一到週日,用來模擬「今天是星期幾」。
+_WEEK = [date(2026, 8, 17) + timedelta(days=i) for i in range(7)]
+_HOURLY_BAR_HOURS = (14, 15, 16, 17, 18, 19)  # UTC;實測每交易日就是這 6 根
 
 
-async def test_list_daily_prices_autoderives_start_when_no_bounds() -> None:
-    """list_daily_prices 不帶 start/end:自動送出回推的 start、不送 end。"""
+def _freeze_today(today: date):
+    """把 tools 模組裡的 `date.today()` 釘死在 `today`(讓星期幾可被 parametrize)。"""
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return today
+
+    return patch.object(tools, "date", _FrozenDate)
+
+
+def _freeze_now(now: datetime):
+    """把 tools 模組裡的 `datetime.now()` 釘死在 `now`。"""
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return now
+
+    return patch.object(tools, "datetime", _FrozenDatetime)
+
+
+def _latest_weekday(today: date) -> date:
+    """模擬宇宙裡最新的那個交易日(週末往前退到週五)。"""
+    d = today
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def _fake_daily_backend(today: date):
+    """忠實模擬 /api/prices/daily:視窗內所有平日 ASC 產生,再套 `[:limit]`。
+
+    `[:limit]` 就是後端 `ORDER BY date ASC LIMIT n` 的語意 —— 視窗內 bar 多於 limit 時
+    被砍掉的是**最新**那幾根。工具若還是把使用者的小 limit 直接送給後端就會在這裡露餡。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        start = date.fromisoformat(params["start"])
+        end = date.fromisoformat(params["end"]) if "end" in params else today
+        limit = int(params["limit"])
+        rows = []
+        cursor = start
+        while cursor <= end:
+            if cursor.weekday() < 5:
+                rows.append({"ticker": "AAPL", "date": cursor.isoformat(), "close": 1.0})
+            cursor += timedelta(days=1)
+        return httpx.Response(200, json=rows[:limit])
+
+    return handler
+
+
+def _fake_hourly_backend(now: datetime):
+    """忠實模擬 /api/prices/hourly:視窗內每個平日 6 根 bar,ASC,再套 `[:limit]`。
+
+    過濾條件比照後端:`start <= dt <= now`(比的是時間點,不是日期)。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        start = datetime.strptime(params["start"], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=UTC
+        )
+        limit = int(params["limit"])
+        rows = []
+        cursor = start.date()
+        while cursor <= now.date():
+            if cursor.weekday() < 5:
+                for hour in _HOURLY_BAR_HOURS:
+                    dt = datetime(
+                        cursor.year, cursor.month, cursor.day, hour, tzinfo=UTC
+                    )
+                    if start <= dt <= now:
+                        rows.append(
+                            {
+                                "ticker": "AAPL",
+                                "dt": dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "close": 1.0,
+                            }
+                        )
+            cursor += timedelta(days=1)
+        return httpx.Response(200, json=rows[:limit])
+
+    return handler
+
+
+@pytest.mark.parametrize("today", _WEEK, ids=lambda d: d.strftime("%a"))
+@pytest.mark.parametrize("limit", [*range(1, 41), 100, 2000])
+async def test_list_daily_prices_auto_window_returns_newest_n(
+    limit: int, today: date
+) -> None:
+    """auto 視窗必須回**最新** N 筆:最後一筆 == 宇宙裡最新的交易日,長度 == limit。
+
+    順帶釘死 fetch 用的是 API 上限(而不是使用者的 limit)—— 那正是「後端不會截斷」
+    這個結構性保證的來源。
+    """
     with respx.mock(base_url="http://test-api") as mock:
-        route = mock.get("/api/prices/daily").respond(200, json=[])
-        await _unwrap(tools.list_daily_prices)(ticker="aapl", limit=30)
+        route = mock.get("/api/prices/daily").mock(side_effect=_fake_daily_backend(today))
+        with _freeze_today(today):
+            result = await _unwrap(tools.list_daily_prices)(ticker="aapl", limit=limit)
 
     params = dict(route.calls.last.request.url.params)
-    assert params["ticker"] == "AAPL"
-    assert params["limit"] == "30"
+    assert params["limit"] == str(tools._DAILY_FETCH_MAX)  # (c) 用 API 上限抓
     assert "end" not in params  # 上界留白 = 取到最新
-    assert "start" in params
-    derived = date.fromisoformat(params["start"])
-    expected = date.today() - timedelta(days=ceil(30 * 1.4))
-    assert abs((derived - expected).days) <= 1  # 容忍 assert 期間跨過午夜
+    assert result[-1]["date"] == _latest_weekday(today).isoformat()  # (a) 最新一定在
+    assert len(result) == limit  # (b) 資料足夠時剛好 N 筆
+
+
+@pytest.mark.parametrize("today", _WEEK, ids=lambda d: d.strftime("%a"))
+@pytest.mark.parametrize("limit", [*range(1, 31), 5000])
+async def test_list_hourly_prices_auto_window_returns_newest_n(
+    limit: int, today: date
+) -> None:
+    """小時 K 的 auto 視窗同樣必須回**最新** N 根(每交易日 6 根)。"""
+    now = datetime(today.year, today.month, today.day, 23, 30, tzinfo=UTC)
+    latest = _latest_weekday(today)
+    expected_newest = datetime(
+        latest.year, latest.month, latest.day, _HOURLY_BAR_HOURS[-1], tzinfo=UTC
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    with respx.mock(base_url="http://test-api") as mock:
+        route = mock.get("/api/prices/hourly").mock(side_effect=_fake_hourly_backend(now))
+        with _freeze_now(now):
+            result = await _unwrap(tools.list_hourly_prices)(ticker="aapl", limit=limit)
+
+    params = dict(route.calls.last.request.url.params)
+    assert params["limit"] == str(tools._HOURLY_FETCH_MAX)
+    assert "end" not in params
+    assert result[-1]["dt"] == expected_newest
+    assert len(result) == limit
 
 
 async def test_list_daily_prices_keeps_explicit_bounds() -> None:
-    """顯式帶 start/end 時不回推,原樣轉發。"""
+    """顯式帶 start/end:原樣轉發使用者的 limit,且**不做** client 端裁切。
+
+    自帶區間 = 後端語意(該區間內最舊 N 筆),工具不能偷偷改成「最新 N 筆」——
+    那會讓「查 2024 上半年最前面 5 筆」這種明確請求拿到錯的東西。
+    """
+    payload = [
+        {"ticker": "AAPL", "date": "2024-01-02", "close": 1.0},
+        {"ticker": "AAPL", "date": "2024-01-03", "close": 2.0},
+        {"ticker": "AAPL", "date": "2024-01-04", "close": 3.0},
+    ]
     with respx.mock(base_url="http://test-api") as mock:
-        route = mock.get("/api/prices/daily").respond(200, json=[])
-        await _unwrap(tools.list_daily_prices)(
+        route = mock.get("/api/prices/daily").respond(200, json=payload)
+        result = await _unwrap(tools.list_daily_prices)(
             ticker="aapl", start="2024-01-01", end="2024-06-30", limit=30
         )
 
     params = dict(route.calls.last.request.url.params)
     assert params["start"] == "2024-01-01"
     assert params["end"] == "2024-06-30"
+    assert params["limit"] == "30"  # 送使用者的 limit,不是 API 上限
+    assert result == payload  # 原樣回傳,不裁切
 
 
-async def test_list_hourly_prices_autoderives_start_when_no_bounds() -> None:
-    """list_hourly_prices 不帶 start/end:自動送出回推的 start(UTC ISO)、不送 end。"""
+async def test_list_hourly_prices_keeps_explicit_bounds() -> None:
+    """小時 K 自帶 start/end 時同樣原樣轉發 limit、不裁切。"""
+    payload = [
+        {"ticker": "AAPL", "dt": "2026-05-22T14:00:00Z", "close": 1.0},
+        {"ticker": "AAPL", "dt": "2026-05-22T15:00:00Z", "close": 2.0},
+    ]
     with respx.mock(base_url="http://test-api") as mock:
-        route = mock.get("/api/prices/hourly").respond(200, json=[])
-        await _unwrap(tools.list_hourly_prices)(ticker="aapl", limit=100)
+        route = mock.get("/api/prices/hourly").respond(200, json=payload)
+        result = await _unwrap(tools.list_hourly_prices)(
+            ticker="aapl",
+            start="2026-05-22T13:30:00Z",
+            end="2026-05-22T20:00:00Z",
+            limit=100,
+        )
 
     params = dict(route.calls.last.request.url.params)
-    assert params["ticker"] == "AAPL"
     assert params["limit"] == "100"
-    assert "end" not in params
-    assert "start" in params
-    derived = datetime.strptime(params["start"], "%Y-%m-%dT%H:%M:%SZ").replace(
-        tzinfo=timezone.utc
-    )
-    expected = datetime.now(timezone.utc) - timedelta(days=ceil(100 / 5))
-    assert abs((derived - expected).total_seconds()) <= 172800  # 2 天內(容忍執行耗時)
+    assert result == payload
+
+
+async def test_list_daily_prices_auto_window_returns_all_when_data_short() -> None:
+    """視窗內 bar 數 < limit(新上市 / 資料不足)→ 全給,不報錯也不補空。"""
+    payload = [
+        {"ticker": "NEWCO", "date": "2026-08-17", "close": 1.0},
+        {"ticker": "NEWCO", "date": "2026-08-18", "close": 2.0},
+    ]
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/prices/daily").respond(200, json=payload)
+        result = await _unwrap(tools.list_daily_prices)(ticker="newco", limit=50)
+
+    assert result == payload
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3])
+async def test_list_daily_prices_auto_window_survives_weekend_gap(limit: int) -> None:
+    """小 limit 遇上「週一早上、日 K 還沒刷新」不可以回空 list。
+
+    釘的是 `_MIN_DAILY_WINDOW_DAYS` 這個視窗下限:純比例回推在 limit=1 時只往回 2 天,
+    視窗 [週六, 週一] 內一根 bar 都沒有(週末無盤 + 週一尚未刷新)→ 回空。墊到 7 天才
+    跨得過週末拿到上週五那根。視窗給寬不花成本(fetch 用 API 上限、多的在 client 端裁掉)。
+    """
+    monday = date(2026, 8, 17)
+    last_friday = date(2026, 8, 14)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """模擬「最新一根停在上週五」的後端(週一盤前尚未刷新)。"""
+        start = date.fromisoformat(request.url.params["start"])
+        rows = []
+        cursor = start
+        while cursor <= last_friday:
+            if cursor.weekday() < 5:
+                rows.append({"ticker": "AAPL", "date": cursor.isoformat(), "close": 1.0})
+            cursor += timedelta(days=1)
+        return httpx.Response(200, json=rows[: int(request.url.params["limit"])])
+
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/prices/daily").mock(side_effect=handler)
+        with _freeze_today(monday):
+            result = await _unwrap(tools.list_daily_prices)(ticker="aapl", limit=limit)
+
+    assert result, "視窗塌到跨不過週末 → 回空 list"
+    assert result[-1]["date"] == last_friday.isoformat()
+    assert len(result) == limit
+
+
+async def test_get_latest_price_returns_backend_payload() -> None:
+    """get_latest_price 原樣回後端 payload(單筆 dict,不做任何加工)。"""
+    payload = {
+        "ticker": "AAPL",
+        "date": "2026-08-20",
+        "open": 1.0,
+        "high": 2.0,
+        "low": 0.5,
+        "close": 1.5,
+        "volume": 100,
+    }
+    with respx.mock(base_url="http://test-api") as mock:
+        route = mock.get("/api/prices/daily/latest").respond(200, json=payload)
+        result = await _unwrap(tools.get_latest_price)(ticker="aapl")
+
+    assert dict(route.calls.last.request.url.params) == {"ticker": "AAPL"}
+    assert result == payload
 
 
 # ---- get_earnings_transcript:falsy / whitespace quarter 視同省略 -----------------
@@ -748,3 +950,227 @@ async def test_get_earnings_transcript_whitespace_quarter_stripped() -> None:
 
     assert detail_route.called
     assert result["quarter"] == "2025Q3"
+
+
+# ---- 回傳值斷言:本輪改到的 tool ------------------------------------------
+#
+# 這個檔原本 80 個 tool 測試只驗 URL / params,不驗回傳值 —— 也就是「tool 把後端 payload
+# 弄壞了」這類 bug 完全測不到。這輪不重寫整批,只補上本次動過的那幾個 tool。
+
+
+_FINANCIAL_ROWS = [
+    {
+        "ticker": "SHOP",
+        "fiscal_year": 2025,
+        "fiscal_period": "FY",
+        "period_end": "2025-12-31",
+        "reporting_currency": "CAD",  # 非 USD 的 filer 確實存在(ADR / 外國申報人)
+        "revenue": 1000.0,
+    },
+    {
+        "ticker": "SHOP",
+        "fiscal_year": 2025,
+        "fiscal_period": "Q3",
+        "period_end": "2025-09-30",
+        "reporting_currency": "CAD",
+        "revenue": 250.0,
+    },
+]
+
+
+@pytest.mark.parametrize(
+    ("tool_fn", "path"),
+    [
+        (tools.get_income_statements, "/api/financials/income"),
+        (tools.get_balance_sheets, "/api/financials/balance"),
+        (tools.get_cash_flow_statements, "/api/financials/cashflow"),
+    ],
+)
+async def test_financial_statement_tools_return_backend_rows_verbatim(tool_fn, path: str) -> None:
+    """三張報表 tool 原樣回後端列 —— 特別是 reporting_currency 不可被吃掉。
+
+    平台不做 FX 換算,agent 只能靠每列的 reporting_currency 判斷口徑;
+    這個欄位一旦在轉手時被丟掉,下游就會拿 USD 價格去跟 CAD 財報算 P/E。
+    """
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get(path).respond(200, json=_FINANCIAL_ROWS)
+        result = await _unwrap(tool_fn)(ticker="shop")
+
+    assert result == _FINANCIAL_ROWS
+    assert result[0]["reporting_currency"] == "CAD"
+
+
+async def test_get_latest_period_returns_backend_payload() -> None:
+    """三表合體原樣回傳(含各子物件的 reporting_currency)。"""
+    payload = {
+        "ticker": "SHOP",
+        "period_end": "2025-12-31",
+        "income": {"reporting_currency": "CAD", "revenue": 1000.0},
+        "balance": {"reporting_currency": "CAD", "total_assets": 5000.0},
+        "cash_flow": {"reporting_currency": "CAD", "operating_cash_flow": 300.0},
+    }
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/financials/latest").respond(200, json=payload)
+        result = await _unwrap(tools.get_latest_period)(ticker="shop")
+
+    assert result == payload
+
+
+async def test_financial_tools_forward_q4_and_get_empty() -> None:
+    """DB 裡沒有 Q4 列:後端收下 period 但回空 —— tool 誠實把空 list 傳回去,不假裝有資料。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        route = mock.get("/api/financials/income").respond(200, json=[])
+        result = await _unwrap(tools.get_income_statements)(
+            ticker="aapl", period="quarterly"
+        )
+
+    assert dict(route.calls.last.request.url.params)["period"] == "quarterly"
+    assert result == []
+
+
+async def test_get_market_news_returns_backend_payload_with_topic_codes() -> None:
+    """market news 原樣回傳;topics[].topic 是全小寫底線代碼(非 Title Case 顯示標籤)。"""
+    payload = [
+        {
+            "title": "Fed holds rates",
+            "url": "https://example.com/a",
+            "source": "Example",
+            "published_at": "2026-08-20T12:00:00Z",
+            "topics": [
+                {"topic": "economy_monetary", "relevance": 0.9},
+                {"topic": "financial_markets", "relevance": 0.7},
+            ],
+        }
+    ]
+    with respx.mock(base_url="http://test-api") as mock:
+        route = mock.get("/api/market/news").respond(200, json=payload)
+        result = await _unwrap(tools.get_market_news)(topic="economy_monetary", limit=5)
+
+    assert dict(route.calls.last.request.url.params) == {
+        "limit": "5",
+        "topic": "economy_monetary",
+    }
+    assert result == payload
+
+
+async def test_get_market_news_unknown_topic_returns_empty_list() -> None:
+    """topic 對不上是**靜默回空 list**,不是報錯 —— tool 必須原樣把空 list 傳回去。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/market/news").respond(200, json=[])
+        result = await _unwrap(tools.get_market_news)(topic="Financial Markets")
+
+    assert result == []
+
+
+# ---- tool description 契約回歸:釘住依 prod 實測修正的說法 -------------------
+#
+# tool description 是 LLM 唯一的語意來源,講錯就是安靜地算錯(拿 USD 價格對 CAD 財報算
+# P/E、以為日 K 是還原價、拿 Title Case 去篩 topic 篩到空)。這裡把已推翻的說法釘成黑名單。
+#
+# **關鍵:斷言的是 FastMCP 實際送給 LLM 的 description,不是 `__doc__`。**
+# FastMCP 只把 `Args:` **之前**的 prose 當 tool description,`Args:` 的內容拆進 input
+# schema 的 param description,而 `Returns:` 那段**整段不會出現在 wire 上**。也就是說
+# 「寫在 docstring 裡」不等於「LLM 讀得到」—— 警告若擺在 Args/Returns 之後就是隱形的。
+# 用 `__doc__` 斷言會通過但保護不到真正的契約,所以這裡走 `to_mcp_tool()`。
+
+
+_FINANCIAL_TOOLS = (
+    tools.get_income_statements,
+    tools.get_balance_sheets,
+    tools.get_cash_flow_statements,
+    tools.get_latest_period,
+)
+
+
+async def _mcp_tool(tool_fn):
+    """拿到 FastMCP 註冊後、真正會序列化上 wire 的那個 tool 物件。
+
+    `@mcp.tool` 在這個 FastMCP 版本回的是原函式,description / inputSchema 要從
+    provider 的註冊表查(跟 `test_all_tools_registered` 同一條路)。
+    """
+    name = _unwrap(tool_fn).__name__
+    registered = {t.name: t for t in await mcp._local_provider.list_tools()}
+    return registered[name].to_mcp_tool()
+
+
+async def _doc(tool_fn) -> str:
+    """FastMCP 實際送給 LLM 的 tool description(不是 raw docstring)。"""
+    return (await _mcp_tool(tool_fn)).description or ""
+
+
+async def _param_doc(tool_fn, param: str) -> str:
+    """FastMCP 送給 LLM 的某個參數說明(來自 docstring 的 Args: 區塊)。"""
+    schema = (await _mcp_tool(tool_fn)).inputSchema
+    return schema["properties"][param].get("description", "")
+
+
+async def test_returns_section_is_not_sent_to_llm() -> None:
+    """釘住上面那個假設本身:`Returns:` 不會進 wire description。
+
+    這條測試存在是為了讓「警告要放 Args: 之前」這個規則有據可考 —— 哪天 FastMCP 改成
+    連 Returns 一起送,這裡會紅,提醒可以把說明搬回去。
+    """
+    doc = await _doc(tools.get_income_statements)
+    assert "Returns:" not in doc
+    assert "Args:" not in doc
+
+
+@pytest.mark.parametrize("tool_fn", _FINANCIAL_TOOLS, ids=lambda t: _unwrap(t).__name__)
+async def test_financial_descriptions_drop_usd_normalized_claim(tool_fn) -> None:
+    """財報 tool 不得再宣稱 USD-normalized —— ETL 完全不換匯,存的是申報原幣。"""
+    doc = await _doc(tool_fn)
+    assert "USD-normalized" not in doc
+    assert "reporting_currency" in doc
+    assert "NO FX conversion" in doc
+
+
+@pytest.mark.parametrize("tool_fn", _FINANCIAL_TOOLS, ids=lambda t: _unwrap(t).__name__)
+async def test_financial_descriptions_warn_about_cross_currency_ratios(tool_fn) -> None:
+    """必須明講:reporting_currency != 'USD' 時不要拿 USD 價格算 P/E 之類的比率。"""
+    doc = await _doc(tool_fn)
+    assert "reporting_currency != 'USD'" in doc
+    assert "P/E" in doc
+
+
+@pytest.mark.parametrize("tool_fn", _FINANCIAL_TOOLS, ids=lambda t: _unwrap(t).__name__)
+async def test_financial_period_param_states_q4_does_not_exist(tool_fn) -> None:
+    """`period` 參數說明必須明講 DB 裡根本沒有 Q4 列(傳 "Q4" 後端會收但永遠回空)。"""
+    doc = await _param_doc(tool_fn, "period")
+    assert "Q4" in doc
+    assert "沒有" in doc
+
+
+@pytest.mark.parametrize(
+    "tool_fn", (tools.list_daily_prices, tools.get_latest_price), ids=lambda t: _unwrap(t).__name__
+)
+async def test_price_descriptions_say_as_traded_not_adjusted(tool_fn) -> None:
+    """價格 cadence 行不得自稱 adjusted —— 此端點回的是未還原的 as-traded 價。"""
+    doc = await _doc(tool_fn)
+    assert "as-traded (NOT split/dividend adjusted)" in doc
+    assert "; adjusted;" not in doc
+    assert "adj_close" in doc  # 要指路:底層表有這欄,得走 execute_readonly_sql
+
+
+async def test_market_news_topic_param_lists_real_lowercase_topics() -> None:
+    """topic 合法值必須是 prod 實測的 15 個小寫底線代碼,不是 Title Case 顯示標籤。"""
+    doc = await _param_doc(tools.get_market_news, "topic")
+    for code in (
+        "financial_markets",
+        "earnings",
+        "finance",
+        "technology",
+        "life_sciences",
+        "energy_transportation",
+        "retail_wholesale",
+        "economy_macro",
+        "manufacturing",
+        "real_estate",
+        "mergers_and_acquisitions",
+        "economy_fiscal",
+        "ipo",
+        "economy_monetary",
+        "blockchain",
+    ):
+        assert code in doc, f"get_market_news topic param missing code {code!r}"
+    for refuted in ("Financial Markets", "Mergers & Acquisitions", "Economy - Macro/Overall"):
+        assert refuted not in doc, f"topic param still carries refuted label {refuted!r}"
