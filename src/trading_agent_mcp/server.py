@@ -1,10 +1,11 @@
-"""FastMCP server 設定 —— 註冊 server identity 與 tools。
+"""FastMCP server 設定 —— 註冊 server identity、tools 與 middleware。
 
 Tools 在 `trading_agent_mcp.tools` 透過 `@mcp.tool` 註冊;import 即生效。
 
 Auth(`_build_auth` 決定,優先序由上到下):
-  1. per-user 模式(mcp_per_user_auth=True 且 mcp_api_base_url 有值)
-     → PerUserTokenVerifier:每個 user 帶自己的 API key,打後端 authorize 驗證 + 計量。
+  1. per-user 模式(mcp_per_user_auth=True 且 mcp_saas_database_url 有值)
+     → PerUserTokenVerifier:每個 user 帶自己的 API key,直接對 SaaS 控制面 DB
+       驗證(帶正向快取);計量另由 UsageMiddleware 在 tool 層非同步寫。
   2. 單一共用 token(mcp_bearer_token 非空)→ StaticTokenVerifier(舊行為 / 本機)。
   3. 兩者皆無 → None(不啟用 auth;stdio 本機開發或無 auth 的 dev container)。
 """
@@ -17,16 +18,17 @@ from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
 from trading_agent_mcp.auth import PerUserTokenVerifier
 from trading_agent_mcp.settings import settings
+from trading_agent_mcp.usage import UsageMiddleware
 
 
 def _build_auth() -> TokenVerifier | None:
     """依 settings 決定 verifier;見模組 docstring 的優先序。"""
-    # 1. Per-user SaaS 模式 —— 需要 base URL 才能打 authorize,否則退回 static。
-    if settings.mcp_per_user_auth and settings.mcp_api_base_url:
+    # 1. Per-user SaaS 模式 —— 需要 SaaS 控制面 DSN 才驗得了 key,否則退回 static。
+    if settings.mcp_per_user_auth and settings.mcp_saas_database_url:
         return PerUserTokenVerifier(
-            api_base_url=settings.mcp_api_base_url,
-            service_token=settings.mcp_api_auth_token,
-            cache_ttl=settings.mcp_authorize_cache_ttl,
+            cache_ttl=settings.mcp_auth_cache_ttl,
+            stale_ttl=settings.mcp_auth_stale_ttl,
+            quota_ttl=settings.mcp_quota_cache_ttl,
         )
 
     # 2. 單一共用 token(向後相容:本機 / 舊部署)。
@@ -45,6 +47,9 @@ def _build_auth() -> TokenVerifier | None:
     # 3. 不啟用 auth。
     return None
 
+
+# 先算出 verifier 再傳進 FastMCP —— 下面要靠它判斷該不該掛計量 middleware。
+_auth = _build_auth()
 
 mcp = FastMCP(
     name="investor-db",
@@ -79,8 +84,13 @@ mcp = FastMCP(
         "不熟悉本服務 / 第一次使用,先呼叫 start_here 工具拿產品範圍、選工具指引與完整 "
         "workflow 地圖(它也會點出只看 tools/list 容易漏掉的 prompts / resources)。"
     ),
-    auth=_build_auth(),
+    auth=_auth,
 )
+
+# 計量只在 per-user 模式掛:其他模式的 client_id 是共用身分(不是 user uuid),
+# 硬記會每次 INSERT 都撞型別 / 外鍵而失敗,只會刷 log。
+if isinstance(_auth, PerUserTokenVerifier):
+    mcp.add_middleware(UsageMiddleware())
 
 # 註冊 tools / resources / prompts(side effect:各模組內的 @mcp.* 裝飾器跑過會把元件
 # 掛到 mcp 物件上)。放 server 模組底端避免循環 import。

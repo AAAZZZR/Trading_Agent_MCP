@@ -134,13 +134,14 @@ you also need that API and its Postgres database — see [Trading_Agent](https:/
 
 | Mode | Enabled when | Behaviour |
 |---|---|---|
-| **Per-user (SaaS)** | `MCP_PER_USER_AUTH=true` **and** `MCP_API_BASE_URL` set | Each user sends their own API key. Every request is validated against the backend `POST /api/mcp/authorize` (metered, tier-scoped). Scopes reflect the user's tier. |
+| **Per-user (SaaS)** | `MCP_PER_USER_AUTH=true` **and** `MCP_SAAS_DATABASE_URL` set | Each user sends their own API key, validated directly against the SaaS control-plane database (`MCP_SAAS_DATABASE_URL`), with a short positive cache; metering is fire-and-forget per tool call. Scopes reflect the user's tier. |
 | **Shared token** | per-user off + `MCP_BEARER_TOKEN` set | A single shared bearer (scope `tier:pro`, full access). Backwards-compatible. |
 | **No auth** | neither | No verifier — for local stdio development. |
 
 - The server does **not** advertise OAuth metadata, so a 401 surfaces as a plain auth failure rather than kicking the client into an OAuth flow.
 - **Tier gating:** only `execute_readonly_sql` and `describe_table` require `tier:pro`. On a `tier:free` key they don't appear in `tools/list` and are blocked if called directly. The other 50 tools are available to free and pro.
-- A ~20s in-process cache stores *validity/tier only* as a fallback when the authorize call briefly fails — metering and quota always defer to the backend.
+- **Caching:** a verified key is cached in-process for `MCP_AUTH_CACHE_TTL` (5 min) and does not touch the database during that window — the trade-off is that a revoked key stays usable for at most that long. If the database is briefly unreachable, a previously verified key keeps working for up to `MCP_AUTH_STALE_TTL` (60 min); with no cache entry the request is rejected.
+- **Quota is not a broken key:** running out of free-tier calls still authenticates — the connection stays up and only `tools/call` is refused, with a message saying the key is still valid.
 
 ## Tool reference
 
@@ -373,10 +374,13 @@ If `MCP_READONLY_DB_DSN` is empty the two SQL tools are disabled (they return a 
 | Env var | Required | Default | Purpose |
 |---|---|---|---|
 | `MCP_API_BASE_URL` | ✅ | — | Stockfacts REST API base URL (no trailing slash). |
-| `MCP_API_AUTH_TOKEN` | ✅ | — | Service bearer: MCP server → REST API (also used to call `/api/mcp/authorize`). |
+| `MCP_API_AUTH_TOKEN` | ✅ | — | Service bearer: MCP server → REST API. |
 | `MCP_BEARER_TOKEN` | — | `""` | Shared client bearer (shared-token mode only). |
 | `MCP_PER_USER_AUTH` | — | `true` | `true` = per-user SaaS auth; `false` = shared token. |
-| `MCP_AUTHORIZE_CACHE_TTL` | — | `20` | Per-user validity/tier cache TTL (seconds). |
+| `MCP_SAAS_DATABASE_URL` | — | `""` | SaaS control-plane Postgres DSN (`api_keys` / `subscriptions` / `usage_events`). Needs read **and** write, so it is not the read-only role below. Empty disables per-user auth. |
+| `MCP_AUTH_CACHE_TTL` | — | `300` | Positive auth cache TTL (seconds); a revoked key stays usable for at most this long. |
+| `MCP_AUTH_STALE_TTL` | — | `3600` | How long a cached key keeps working while the database is unreachable (seconds). |
+| `MCP_QUOTA_CACHE_TTL` | — | `60` | Quota-state cache TTL (seconds). |
 | `MCP_READONLY_DB_DSN` | — | `""` | Read-only Postgres DSN for the SQL tools. Empty disables them. |
 | `PORT` | — | `8000` | Streamable HTTP port. |
 
@@ -511,13 +515,14 @@ API 與它的 Postgres——見 [Trading_Agent](https://github.com/AAAZZZR/Tradi
 
 | 模式 | 啟用條件 | 行為 |
 |---|---|---|
-| **Per-user(SaaS)** | `MCP_PER_USER_AUTH=true` **且** `MCP_API_BASE_URL` 有值 | 每個 user 帶自己的 API key。每次請求對後端 `POST /api/mcp/authorize` 驗證(計量、依 tier 授權)。scope 反映 user 的 tier。 |
+| **Per-user(SaaS)** | `MCP_PER_USER_AUTH=true` **且** `MCP_SAAS_DATABASE_URL` 有值 | 每個 user 帶自己的 API key,直接對 SaaS 控制面 DB(`MCP_SAAS_DATABASE_URL`)驗證,帶短時間的正向快取;計量改成每次 tool 呼叫非同步寫入。scope 反映 user 的 tier。 |
 | **共用 token** | per-user 關 + `MCP_BEARER_TOKEN` 非空 | 單一共用 bearer(scope `tier:pro`,完整權限)。向後相容。 |
 | **無 auth** | 兩者皆無 | 不啟用 verifier——本機 stdio 開發用。 |
 
 - Server **不**公告 OAuth metadata,所以 401 會直接顯示認證失敗,不會誤把 client 帶進 OAuth 流程。
 - **Tier gating:** 只有 `execute_readonly_sql` 與 `describe_table` 需要 `tier:pro`。`tier:free` 的 key 在 `tools/list` 看不到這兩個、直接呼叫也被擋。其餘 50 個 free/pro 皆可用。
-- 有一個 ~20 秒的 in-process 快取,只存 *validity/tier* 做為 authorize 短暫失敗時的 fallback——計量與配額永遠以後端為準。
+- **快取:** 驗過的 key 會在 process 內快取 `MCP_AUTH_CACHE_TTL`(5 分鐘),期間完全不碰 DB——取捨是撤銷最多延遲這麼久才生效。DB 短暫不可用時,之前驗過的 key 還能續用到 `MCP_AUTH_STALE_TTL`(60 分鐘);沒快取則直接拒絕。
+- **超額不等於壞 key:** 免費額度用完仍然認證成功——連線不斷,只有 `tools/call` 被擋下,並告知使用者 key 還是有效的。
 
 ## 工具參考
 
@@ -749,10 +754,13 @@ psql "<superuser DSN>" -f scripts/grant_readonly.sql
 | 環境變數 | 必填 | 預設 | 用途 |
 |---|---|---|---|
 | `MCP_API_BASE_URL` | ✅ | — | Stockfacts REST API base URL(無尾斜線)。 |
-| `MCP_API_AUTH_TOKEN` | ✅ | — | Service bearer:MCP server → REST API(也用來打 `/api/mcp/authorize`)。 |
+| `MCP_API_AUTH_TOKEN` | ✅ | — | Service bearer:MCP server → REST API。 |
 | `MCP_BEARER_TOKEN` | — | `""` | 共用 client bearer(僅共用 token 模式)。 |
 | `MCP_PER_USER_AUTH` | — | `true` | `true` = per-user SaaS 認證;`false` = 共用 token。 |
-| `MCP_AUTHORIZE_CACHE_TTL` | — | `20` | per-user validity/tier 快取 TTL(秒)。 |
+| `MCP_SAAS_DATABASE_URL` | — | `""` | SaaS 控制面 Postgres DSN(`api_keys` / `subscriptions` / `usage_events`)。要讀**也要寫**,所以不是下面那把唯讀 role。留空 = 停用 per-user 認證。 |
+| `MCP_AUTH_CACHE_TTL` | — | `300` | 驗證成功的正向快取 TTL(秒);撤銷最多延遲這麼久生效。 |
+| `MCP_AUTH_STALE_TTL` | — | `3600` | DB 不可用時,快取還能繼續放行多久(秒)。 |
+| `MCP_QUOTA_CACHE_TTL` | — | `60` | 額度狀態快取 TTL(秒)。 |
 | `MCP_READONLY_DB_DSN` | — | `""` | SQL tool 的唯讀 Postgres DSN。留空即停用。 |
 | `PORT` | — | `8000` | Streamable HTTP port。 |
 

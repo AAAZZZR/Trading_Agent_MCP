@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import sys
 
+from starlette.middleware import Middleware
+
+from trading_agent_mcp.auth import AuthErrorMessageMiddleware
 from trading_agent_mcp.server import mcp
 from trading_agent_mcp.settings import settings
 
@@ -27,11 +30,17 @@ def main() -> None:
     # client 的舊 session id 就會撲空(HTTP 404 / 需重新握手)。無狀態模式沒有黏著
     # 問題,任何 replica 都能接任何請求;代價是不支援 server→client 的主動推送
     # (resumability / SSE 續傳),本 server 全是 request-response 的 tool 呼叫,用不到。
+    #
+    # middleware=[AuthErrorMessageMiddleware]:這層純 ASGI middleware 包在 FastMCP
+    # 的 RequireAuthMiddleware「外面」(server_middleware 在 route 之外),所以攔得到
+    # 框架寫死的 401 —— 用來把「clear authentication tokens in your MCP client and
+    # reconnect」換成不會誤導使用者刪掉好好的 key 的說法(見 auth.py)。
     mcp.run(
         transport="streamable-http",
         host="0.0.0.0",
         port=settings.port,
         stateless_http=True,
+        middleware=[Middleware(AuthErrorMessageMiddleware)],
     )
 
 
