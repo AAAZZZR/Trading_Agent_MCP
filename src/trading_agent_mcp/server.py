@@ -3,28 +3,49 @@
 Tools 在 `trading_agent_mcp.tools` 透過 `@mcp.tool` 註冊;import 即生效。
 
 Auth(`_build_auth` 決定,優先序由上到下):
-  1. per-user 模式(mcp_per_user_auth=True 且 mcp_saas_database_url 有值)
+  1. OAuth 2.1 / Google 上游(google client id + secret + public base url + saas DSN
+     四者齊全)→ StockfactsGoogleProvider:client 自動發現 metadata、彈瀏覽器登入、
+       自動拿 access + refresh token。`idb_` 開頭的自家 API key 仍由它轉交給
+       PerUserTokenVerifier,所以兩條路並存。
+  2. per-user 模式(mcp_per_user_auth=True 且 mcp_saas_database_url 有值)
      → PerUserTokenVerifier:每個 user 帶自己的 API key,直接對 SaaS 控制面 DB
        驗證(帶正向快取);計量另由 UsageMiddleware 在 tool 層非同步寫。
-  2. 單一共用 token(mcp_bearer_token 非空)→ StaticTokenVerifier(舊行為 / 本機)。
-  3. per-user 開著但兩個憑據來源都沒有 → MisconfiguredVerifier(一律 401,不 fail open)。
-  4. per-user 明確關閉且無共用 token → None(不啟用 auth;stdio 本機開發 / dev container)。
+  3. 單一共用 token(mcp_bearer_token 非空)→ StaticTokenVerifier(舊行為 / 本機)。
+  4. per-user 開著但兩個憑據來源都沒有 → MisconfiguredVerifier(一律 401,不 fail open)。
+  5. per-user 明確關閉且無共用 token → None(不啟用 auth;stdio 本機開發 / dev container)。
+
+OAuth 排最前面是因為它是主線(使用者完全不必手動貼 key);設定不全時
+`build_oauth_provider` 回 None,靜靜落到第 2 條,不會讓 server 起不來。
 """
 
 from __future__ import annotations
 
 from fastmcp import FastMCP
-from fastmcp.server.auth import TokenVerifier
+from fastmcp.server.auth import AuthProvider
 from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 
 from trading_agent_mcp.auth import MisconfiguredVerifier, PerUserTokenVerifier
+from trading_agent_mcp.oauth import StockfactsGoogleProvider, build_oauth_provider
 from trading_agent_mcp.settings import settings
 from trading_agent_mcp.usage import UsageMiddleware
 
 
-def _build_auth() -> TokenVerifier | None:
-    """依 settings 決定 verifier;見模組 docstring 的優先序。"""
-    # 1. Per-user SaaS 模式 —— 需要 SaaS 控制面 DSN 才驗得了 key,否則退回 static。
+def _build_auth() -> AuthProvider | None:
+    """依 settings 決定 auth provider;見模組 docstring 的優先序。"""
+    # 1. OAuth(主線)—— 四個設定齊全才成立,缺任何一個回 None 落到下一條。
+    oauth = build_oauth_provider(
+        client_id=settings.mcp_google_client_id,
+        client_secret=settings.mcp_google_client_secret,
+        public_base_url=settings.mcp_public_base_url,
+        saas_database_url=settings.mcp_saas_database_url,
+        cache_ttl=settings.mcp_auth_cache_ttl,
+        stale_ttl=settings.mcp_auth_stale_ttl,
+        quota_ttl=settings.mcp_quota_cache_ttl,
+    )
+    if oauth is not None:
+        return oauth
+
+    # 2. Per-user SaaS 模式 —— 需要 SaaS 控制面 DSN 才驗得了 key,否則退回 static。
     if settings.mcp_per_user_auth and settings.mcp_saas_database_url:
         return PerUserTokenVerifier(
             cache_ttl=settings.mcp_auth_cache_ttl,
@@ -32,7 +53,7 @@ def _build_auth() -> TokenVerifier | None:
             quota_ttl=settings.mcp_quota_cache_ttl,
         )
 
-    # 2. 單一共用 token(向後相容:本機 / 舊部署)。
+    # 3. 單一共用 token(向後相容:本機 / 舊部署)。
     #    共用 token = 完整權限,給 tier:pro scope 讓重量級 tool(execute_readonly_sql)
     #    在非 per-user 模式下照常可用(per-tool gating 在 per-user 模式才區分 tier)。
     if settings.mcp_bearer_token:
@@ -45,14 +66,14 @@ def _build_auth() -> TokenVerifier | None:
             }
         )
 
-    # 3. per-user 開著(這是預設值)卻沒有 DSN、也沒有共用 token —— 設定失誤。
+    # 4. per-user 開著(這是預設值)卻沒有 DSN、也沒有共用 token —— 設定失誤。
     #    這裡**不能**掉到下面的「不啟用 auth」:mcp_per_user_auth 為真代表這台是
     #    要對外服務的,少設一個環境變數就把整台 server 敞開,是最糟的失敗模式。
     #    改成一律 401(見 MisconfiguredVerifier 的 docstring)。
     if settings.mcp_per_user_auth:
         return MisconfiguredVerifier()
 
-    # 4. 明確關掉 per-user 又沒有共用 token —— 本機 stdio / dev container,不啟用 auth。
+    # 5. 明確關掉 per-user 又沒有共用 token —— 本機 stdio / dev container,不啟用 auth。
     return None
 
 
@@ -95,10 +116,26 @@ mcp = FastMCP(
     auth=_auth,
 )
 
-# 計量只在 per-user 模式掛:其他模式的 client_id 是共用身分(不是 user uuid),
-# 硬記會每次 INSERT 都撞型別 / 外鍵而失敗,只會刷 log。
-if isinstance(_auth, PerUserTokenVerifier):
+# 計量掛在「claims 帶得出 user_id」的兩種模式(OAuth / per-user bearer)。
+# 其他模式的 client_id 是共用身分(不是 user uuid),硬記會每次 INSERT 都撞
+# 型別 / 外鍵而失敗,只會刷 log。
+if isinstance(_auth, StockfactsGoogleProvider | PerUserTokenVerifier):
     mcp.add_middleware(UsageMiddleware())
+
+
+def _should_rewrite_401(auth: AuthProvider | None) -> bool:
+    """401 文案要不要改寫 —— 由實際的 auth 模式決定。
+
+    OAuth 模式下 401 是「請去認證」的正常訊號,框架原本那句「clear tokens and
+    reconnect」描述的正是 client 該做的事,原樣放行才對;bearer-only 模式沒有
+    OAuth 可走,那句話只會讓使用者刪掉手上好好的 key,要換掉。
+    詳見 `auth.AuthErrorMessageMiddleware` 的 docstring。
+    """
+    return not isinstance(auth, StockfactsGoogleProvider)
+
+
+# `__main__.py` 建 ASGI middleware 時用。
+rewrite_401_description = _should_rewrite_401(_auth)
 
 # 註冊 tools / resources / prompts(side effect:各模組內的 @mcp.* 裝飾器跑過會把元件
 # 掛到 mcp 物件上)。放 server 模組底端避免循環 import。

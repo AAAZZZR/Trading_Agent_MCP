@@ -125,9 +125,25 @@ async def test_no_access_token_skips_metering(monkeypatch) -> None:
     record.assert_not_awaited()
 
 
+async def test_oauth_session_without_api_key_is_still_metered(monkeypatch) -> None:
+    """OAuth session 沒有 api_key_id → 仍然計量(api_key_id 傳 None)。
+
+    漏掉這條等於白送 OAuth 使用者無限額度:額度是靠數 usage_events 算的。
+    """
+    record = AsyncMock()
+    _patch(monkeypatch, _token(api_key_id=None, user_id="user-oauth"), record)
+    call_next = AsyncMock(return_value=_SENTINEL)
+
+    result = await UsageMiddleware().on_call_tool(_context("get_prices"), call_next)
+    await _flush_metering()
+
+    assert result is _SENTINEL
+    record.assert_awaited_once_with(user_id="user-oauth", api_key_id=None, action="get_prices")
+
+
 async def test_token_without_user_claims_skips_metering(monkeypatch) -> None:
-    """static token 模式沒有 user_id / api_key_id → 放行但不記量
-    (硬記只會每次 INSERT 都失敗刷 log)。"""
+    """static token 模式沒有 user_id → 放行但不記量
+    (client_id 不是 uuid,硬記只會每次 INSERT 都失敗刷 log)。"""
     record = AsyncMock()
     static_token = AccessToken(
         token="shared", client_id="investor-db-default", scopes=["tier:pro"], claims={}

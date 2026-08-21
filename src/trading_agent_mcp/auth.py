@@ -33,16 +33,23 @@ Streamable HTTP 請求(含 handshake、tools/list、每個 tool 呼叫)都會把
 - **額度快取 `quota_ttl`**:額度是商業限制不是安全邊界,60 秒的誤差可接受,
   換掉每個請求一次 `count(*)`;查不到時 fail open(見 `_quota`)。
 
-# 其他
+# 與 OAuth 模式的關係(2026-08 新增 `oauth.py` 之後的現況)
 
-因為本 verifier 不掛任何 .well-known route(TokenVerifier.get_routes 預設回 []),
-不會對外公告 OAuth metadata,所以 Claude Code 看到 401 會直接顯示認證失敗,
-不會誤入 OAuth 流程。而 FastMCP 自己那句「clear authentication tokens in your MCP
-client and reconnect」的 401 文案會誤導使用者刪掉好好的 key,由本模組的
-`AuthErrorMessageMiddleware`(ASGI 層)改寫掉。
+本 verifier 自己**不**掛任何 .well-known route(TokenVerifier.get_routes 預設回 []),
+所以 bearer-only 部署照舊不對外公告 OAuth metadata,401 就只是「認證失敗」。
+但當 `oauth.py` 的 `StockfactsGoogleProvider` 啟用時,metadata 與
+authorize / token / register / callback 路由由**它**提供,401 反而是「請去認證」
+的正常訊號,client 要靠 401 的 `WWW-Authenticate: ... resource_metadata="..."`
+才找得到授權伺服器 —— 這也是 `AuthErrorMessageMiddleware` 必須保留該參數、
+並在 OAuth 模式下不改寫文案(`rewrite_description=False`)的原因,見它的 docstring。
+
+FastMCP 自己那句「clear authentication tokens in your MCP client and reconnect」
+的 401 文案在 bearer 模式下會誤導使用者刪掉好好的 key,由 `AuthErrorMessageMiddleware`
+(ASGI 層)改寫掉。
 
 Tier → scopes 對應在 `_scopes_for_tier`;tool 端用 require_scopes("tier:pro")
-做 per-tool gating(見 tools.py)。
+做 per-tool gating(見 tools.py)。額度快取抽成 `QuotaCache`,bearer 與 OAuth
+兩條認證路徑共用**同一個實例** —— 同一個人換一條路進來,額度是同一份。
 """
 
 from __future__ import annotations
@@ -51,6 +58,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -114,6 +122,33 @@ _AUTH_ERROR_WWW_AUTHENTICATE = (
 # 我們自己重算的 header;原始回應中同名的都要拿掉,免得出現兩個 content-length。
 _REPLACED_HEADERS = frozenset({b"content-type", b"content-length", b"www-authenticate"})
 
+# RFC 9728 的 `resource_metadata="<url>"` 參數。MCP client 就是靠 401 上的這個參數
+# 找到授權伺服器、進而彈出瀏覽器登入 —— 改寫 `WWW-Authenticate` 時**必須**原樣保留,
+# 弄丟它等於把整個 OAuth 探索流程打死(client 收到 401 卻不知道該去哪裡認證)。
+_RESOURCE_METADATA_PARAM = re.compile(rb'resource_metadata="[^"]*"')
+
+
+def remember_entry[CacheValue](
+    cache: dict[str, CacheValue],
+    key: str,
+    value: CacheValue,
+    *,
+    max_size: int,
+) -> None:
+    """寫進快取並維持條目上限。
+
+    dict 保有插入序,所以「先 pop 再插入」等於把這一項移到最新端
+    (LRU-ish:每次重新驗證都會刷新位置);超出 `max_size` 時從最舊端淘汰。
+    被淘汰只是下次請求要重查一次 DB,不影響正確性。
+
+    抽成共用函式是因為現在有三份同構的快取(認證結果 / 額度狀態 /
+    `oauth.py` 的 Google 身分),同一段淘汰邏輯抄三次遲早會分岔。
+    """
+    cache.pop(key, None)
+    cache[key] = value
+    while len(cache) > max_size:
+        cache.pop(next(iter(cache)))
+
 
 def _scopes_for_tier(tier: str) -> list[str]:
     """把 tier 轉成 OAuth scopes。
@@ -152,6 +187,65 @@ class _CachedQuota:
     expires_at: float
 
 
+class QuotaCache:
+    """per-user 額度狀態的共用快取 —— bearer 與 OAuth 兩條認證路徑共用**同一個實例**。
+
+    為什麼要共用而不是各自一份:額度是 per-user 的商業限制(`usage_events` 只認
+    user_id),同一個人今天用 API key、明天用 Google 登入,計的是同一份 200 次。
+    兩條路各留一份快取不但多打一次 `count(*)`,兩份的過期時間還會錯開,
+    使用者會看到忽而超額忽而沒超額。
+
+    語意(與模組 docstring 一致):
+      - pro(不限額)完全不查 DB —— `count(*)` 是這條路徑上最貴的 query,
+        而付費用戶剛好是呼叫最兇的那群,省下來最有價值。
+      - 查詢失敗 **fail open**:額度是商業限制不是安全邊界,基礎設施抖動時
+        擋住付了錢的使用者,傷害遠大於少計幾次呼叫。fail open 的結果不寫進快取,
+        下一個請求會再試一次。
+
+    支援 `in` / `len` 是刻意的:它就是一個有上限的容器,呼叫端(與測試)
+    要看「某個 user 有沒有被快取住」時不必去掏內部 dict。
+    """
+
+    def __init__(self, *, ttl: float) -> None:
+        self.ttl = ttl
+        # key = user_id。額度是 per-user 而非 per-key(同一個人多把 key 共用額度)。
+        self._cache: dict[str, _CachedQuota] = {}
+
+    def __contains__(self, user_id: object) -> bool:
+        return user_id in self._cache
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+    async def state(self, user_id: str, tier: str) -> _CachedQuota:
+        """算這個 user 現在超額了沒(快取優先,必要時查 DB)。"""
+        limit = TIER_DAILY_LIMITS.get(tier, TIER_DAILY_LIMITS[DEFAULT_TIER])
+        now = time.monotonic()
+
+        if limit is None:
+            # pro(不限額)—— 連數都不用數。
+            return _CachedQuota(exceeded=False, used_today=None, daily_limit=None, expires_at=now)
+
+        cached = self._cache.get(user_id)
+        if cached is not None and now < cached.expires_at:
+            return cached
+
+        try:
+            used = await saas_db.count_usage_24h(user_id)
+        except _TRANSIENT_DB_ERRORS as exc:
+            logger.warning("quota lookup failed for user %s (%s); failing open", user_id, exc)
+            return _CachedQuota(exceeded=False, used_today=None, daily_limit=limit, expires_at=now)
+
+        quota = _CachedQuota(
+            exceeded=used >= limit,
+            used_today=used,
+            daily_limit=limit,
+            expires_at=now + self.ttl,
+        )
+        remember_entry(self._cache, user_id, quota, max_size=QUOTA_CACHE_MAX_SIZE)
+        return quota
+
+
 class PerUserTokenVerifier(TokenVerifier):
     """每個 user 一把 API key —— 直接對 SaaS 控制面 DB 驗證。
 
@@ -170,12 +264,21 @@ class PerUserTokenVerifier(TokenVerifier):
         super().__init__()
         self._cache_ttl = cache_ttl
         self._stale_ttl = stale_ttl
-        self._quota_ttl = quota_ttl
         # key = API key 的 sha256 hash(不是明文)。反正查 DB 本來就要算 hash,
         # 順手讓這個長生命週期的 dict 裡不留任何明文憑證。
         self._cache: dict[str, _CachedAuth] = {}
-        # key = user_id。額度是 per-user 而非 per-key(同一個人多把 key 共用額度)。
-        self._quota_cache: dict[str, _CachedQuota] = {}
+        self._quota_cache = QuotaCache(ttl=quota_ttl)
+
+    @property
+    def quota_cache(self) -> QuotaCache:
+        """額度快取本體 —— 給 `oauth.py` 取來共用同一份(見 QuotaCache docstring)。"""
+        return self._quota_cache
+
+    @property
+    def _quota_ttl(self) -> float:
+        """建構時傳進來的額度 TTL。實際狀態存在 QuotaCache 裡,這裡不另存一份
+        免得兩邊分岔;保留這個名字是為了讓「TTL 有沒有從 settings 帶進來」還看得見。"""
+        return self._quota_cache.ttl
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """驗證 user API key。
@@ -250,59 +353,12 @@ class PerUserTokenVerifier(TokenVerifier):
             fresh_until=now + self._cache_ttl,
             stale_until=now + self._stale_ttl,
         )
-        self._remember(key_hash, resolved)
+        remember_entry(self._cache, key_hash, resolved, max_size=CACHE_MAX_SIZE)
         return resolved
 
     async def _quota(self, auth: _CachedAuth) -> _CachedQuota:
-        """算這個 user 現在超額了沒。"""
-        limit = TIER_DAILY_LIMITS.get(auth.tier, TIER_DAILY_LIMITS[DEFAULT_TIER])
-        now = time.monotonic()
-
-        if limit is None:
-            # pro(不限額)—— 連數都不用數。count(*) 是這條路徑上最貴的 query,
-            # 而付費用戶剛好是呼叫最兇的那群,省下來最有價值。
-            return _CachedQuota(exceeded=False, used_today=None, daily_limit=None, expires_at=now)
-
-        cached = self._quota_cache.get(auth.user_id)
-        if cached is not None and now < cached.expires_at:
-            return cached
-
-        try:
-            used = await saas_db.count_usage_24h(auth.user_id)
-        except _TRANSIENT_DB_ERRORS as exc:
-            # Fail open:額度是商業限制,不是安全邊界。基礎設施抖動時擋住付了錢
-            # (或還在免費額度內)的使用者,傷害遠大於少計幾次呼叫。不寫進快取,
-            # 下次請求會再試一次。
-            logger.warning("quota lookup failed for user %s (%s); failing open", auth.user_id, exc)
-            return _CachedQuota(exceeded=False, used_today=None, daily_limit=limit, expires_at=now)
-
-        quota = _CachedQuota(
-            exceeded=used >= limit,
-            used_today=used,
-            daily_limit=limit,
-            expires_at=now + self._quota_ttl,
-        )
-        self._remember_quota(auth.user_id, quota)
-        return quota
-
-    def _remember(self, key_hash: str, auth: _CachedAuth) -> None:
-        """寫進認證快取並維持條目上限。
-
-        dict 保有插入序,所以「先 pop 再插入」等於把這把 key 移到最新端
-        (LRU-ish:每次重新驗證都會刷新位置);超出 CACHE_MAX_SIZE 時從最舊端淘汰。
-        被淘汰只是下次請求要重查一次 DB,不影響正確性。
-        """
-        self._cache.pop(key_hash, None)
-        self._cache[key_hash] = auth
-        while len(self._cache) > CACHE_MAX_SIZE:
-            self._cache.pop(next(iter(self._cache)))
-
-    def _remember_quota(self, user_id: str, quota: _CachedQuota) -> None:
-        """寫進額度快取,淘汰法同 `_remember`。"""
-        self._quota_cache.pop(user_id, None)
-        self._quota_cache[user_id] = quota
-        while len(self._quota_cache) > QUOTA_CACHE_MAX_SIZE:
-            self._quota_cache.pop(next(iter(self._quota_cache)))
+        """算這個 user 現在超額了沒 —— 委派給共用的 QuotaCache(OAuth 路徑用同一個)。"""
+        return await self._quota_cache.state(auth.user_id, auth.tier)
 
 
 class MisconfiguredVerifier(TokenVerifier):
@@ -348,13 +404,28 @@ class AuthErrorMessageMiddleware:
     重建一把。改成 `AUTH_ERROR_DESCRIPTION`(見上)。
 
     只碰 401;403 insufficient_scope(tier gating)的文案是對的,原樣放行。
+
+    # `rewrite_description`:OAuth 模式一定要傳 False
+
+    OAuth 啟用之後,401 的意義整個變了 —— 它不再是「你的憑證壞了」,而是
+    「請去認證」的正常訊號,框架那句「clear tokens and reconnect」在這個情境下
+    描述的**正是 client 該做的事**(去重新拿一次 token)。所以 OAuth 模式下
+    傳 `rewrite_description=False`,整個 response 原樣放行,一個 byte 都不動。
+
+    bearer-only 模式維持 True(已上線的行為):那裡沒有 OAuth 可以走,
+    那句話只會讓使用者刪掉手上好好的 key。
+
+    ⚠️ 就算在 True 的模式下,`WWW-Authenticate` 裡的 `resource_metadata="..."`
+    也一定要原樣接回去(見 `_rewrite_auth_headers`)—— 舊實作把整個 header 換掉,
+    一旦哪天同時掛上 OAuth,client 會收到 401 卻找不到授權伺服器,永遠不會彈登入。
     """
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: Any, *, rewrite_description: bool = True) -> None:
         self.app = app
+        self.rewrite_description = rewrite_description
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] != "http":
+        if scope["type"] != "http" or not self.rewrite_description:
             await self.app(scope, receive, send)
             return
 
@@ -391,9 +462,30 @@ class AuthErrorMessageMiddleware:
 
 
 def _rewrite_auth_headers(headers: list[tuple[bytes, bytes]]) -> list[tuple[bytes, bytes]]:
-    """保留原始 header,但換掉 content-type / content-length / www-authenticate。"""
+    """保留原始 header,但換掉 content-type / content-length / www-authenticate。
+
+    唯一從原始 `www-authenticate` 撈回來的是 `resource_metadata="..."`:那是 client
+    發現授權伺服器的唯一線索,只要原始回應有帶就一定要接回去(理由見
+    `_RESOURCE_METADATA_PARAM`)。
+    """
     kept = [(name, value) for name, value in headers if name.lower() not in _REPLACED_HEADERS]
     kept.append((b"content-type", b"application/json"))
     kept.append((b"content-length", str(len(_AUTH_ERROR_BODY)).encode()))
-    kept.append((b"www-authenticate", _AUTH_ERROR_WWW_AUTHENTICATE))
+
+    www_authenticate = _AUTH_ERROR_WWW_AUTHENTICATE
+    resource_metadata = _find_resource_metadata(headers)
+    if resource_metadata is not None:
+        www_authenticate = www_authenticate + b", " + resource_metadata
+    kept.append((b"www-authenticate", www_authenticate))
     return kept
+
+
+def _find_resource_metadata(headers: list[tuple[bytes, bytes]]) -> bytes | None:
+    """從原始 header 撈出 `resource_metadata="<url>"`(整個參數,含參數名)。"""
+    for name, value in headers:
+        if name.lower() != b"www-authenticate":
+            continue
+        match = _RESOURCE_METADATA_PARAM.search(value)
+        if match is not None:
+            return match.group(0)
+    return None

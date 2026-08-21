@@ -738,6 +738,9 @@ keyring = [
 memory = [
     { name = "cachetools" },
 ]
+postgresql = [
+    { name = "asyncpg" },
+]
 
 [[package]]
 name = "pycparser"
@@ -1221,6 +1224,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "py-key-value-aio", extra = ["postgresql"] },
     { name = "pydantic-settings" },
     { name = "sqlparse" },
 ]
@@ -1238,6 +1242,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "fastmcp", specifier = ">=3.4.7" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "py-key-value-aio", extras = ["postgresql"], specifier = ">=0.4.4" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "sqlparse", specifier = ">=0.5.0" },
 ]

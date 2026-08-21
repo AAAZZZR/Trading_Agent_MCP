@@ -43,7 +43,7 @@ QUOTA_EXCEEDED_MESSAGE = (
 _pending_writes: set[asyncio.Task[None]] = set()
 
 
-async def _record(user_id: str, api_key_id: str, action: str) -> None:
+async def _record(user_id: str, api_key_id: str | None, action: str) -> None:
     """背景寫一筆用量。所有例外都在這裡吞掉 —— 這是 fire-and-forget task,
     往外冒只會變成 asyncio 的 "Task exception was never retrieved" 噪音,
     而且計量失敗絕不該影響已經在跑的 tool。"""
@@ -56,8 +56,9 @@ async def _record(user_id: str, api_key_id: str, action: str) -> None:
 class UsageMiddleware(Middleware):
     """每次 tool 呼叫:先擋超額,再非同步記一筆用量。
 
-    只在 per-user 認證模式下掛(見 server.py)—— static token / 無 auth 模式的
-    client_id 不是 uuid,硬記會每次 INSERT 都失敗刷 log。
+    只在「claims 帶得出 user_id」的兩種模式下掛(OAuth / per-user bearer,見
+    server.py)—— static token / 無 auth 模式的 client_id 不是 uuid,硬記會每次
+    INSERT 都失敗刷 log。
     """
 
     async def on_call_tool(
@@ -77,10 +78,20 @@ class UsageMiddleware(Middleware):
 
         user_id = claims.get("user_id")
         api_key_id = claims.get("api_key_id")
-        if user_id and api_key_id:
+        if user_id:
+            # 有 user_id 就計量。**api_key_id 可以是 None** —— OAuth session 根本沒有
+            # API key,而額度是 per-user 的,少記這些呼叫等於白送 OAuth 使用者無限額度。
+            # (usage_events.api_key_id 本來就 nullable,見 saas_db.record_usage。)
+            #
             # 計量發在 call_next「之前」:記的是「呼叫嘗試」,與舊模型每請求計量
             # 的口徑一致(tool 執行失敗也算一次,否則失敗的重試會變成免費額度)。
-            task = asyncio.create_task(_record(str(user_id), str(api_key_id), context.message.name))
+            task = asyncio.create_task(
+                _record(
+                    str(user_id),
+                    str(api_key_id) if api_key_id else None,
+                    context.message.name,
+                )
+            )
             _pending_writes.add(task)
             task.add_done_callback(_pending_writes.discard)
 

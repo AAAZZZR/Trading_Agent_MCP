@@ -16,8 +16,11 @@
 - 每個 query 都帶 timeout:DB 卡住不能讓 MCP 請求跟著卡,寧可快速失敗、
   讓 auth 層落回正向快取(見 `auth.py`)。
 
-這個 DSN 需要寫入權限(INSERT usage_events / UPDATE api_keys.last_used_at),
-所以不能沿用 `MCP_READONLY_DB_DSN` 的唯讀 role。
+這個 DSN 需要寫入權限(INSERT usage_events / UPDATE api_keys.last_used_at /
+INSERT users),所以不能沿用 `MCP_READONLY_DB_DSN` 的唯讀 role。
+
+OAuth(Google 登入)路徑另外用到 `upsert_google_user` —— 把 Google 身分換成我們自己的
+`users.id`,兩條認證路徑(bearer API key / OAuth session)之後才共用同一個 user 空間。
 """
 
 from __future__ import annotations
@@ -100,6 +103,54 @@ UPDATE api_keys
 """
 
 
+# Google 身分 → 我們自己的 users 列。**一次 round-trip** 做完三段語意
+# (對齊 API repo `api/routers/auth.py:_upsert_google_user`,同一批 users 表):
+#   1. `by_sub` —— 這個 Google 帳號登入過 → `bound` 只補**空的**顯示資訊。
+#      刻意用 COALESCE(users.x, EXCLUDED.x) 而不是反過來:使用者可能在別處改過
+#      自己的名字 / 頭像,每次登入都拿 Google 的蓋掉會讓那些修改無聲消失。
+#   2. `created` —— 沒登入過 → INSERT。`ON CONFLICT (email)` 有兩個作用:
+#      (a) 同一個人先用 email/密碼註冊、後來改用 Google 登入 → 綁定既有那列;
+#      (b) 冪等:同一個新使用者的兩個請求同時進來(agent 開連線時很常見),
+#          後到的那個不會爆 UniqueViolation,而是走 DO UPDATE 拿回同一個 id。
+#      DO UPDATE 的 `WHERE users.google_sub IS NULL OR = EXCLUDED.google_sub`
+#      是安全閘:email 已經綁在**別的** Google 帳號上時,DO UPDATE 不動任何列、
+#      整個查詢回 0 列,呼叫端據此拒絕(fail closed)。這種情況只可能發生在
+#      Workspace 回收 email 之類的邊緣狀況,寧可讓人重新註冊也不要換人登入成功。
+# tier 一樣用 LEFT JOIN + COALESCE 帶回來(無 subscriptions 列 = free),
+# 省掉第二個 query —— 與 `_LOOKUP_KEY_SQL` 同一口徑。
+_UPSERT_GOOGLE_USER_SQL = """
+WITH by_sub AS (
+    SELECT id FROM users WHERE google_sub = $1
+),
+bound AS (
+    UPDATE users
+       SET name = COALESCE(users.name, $3),
+           avatar_url = COALESCE(users.avatar_url, $4)
+     WHERE id = (SELECT id FROM by_sub)
+    RETURNING id
+),
+created AS (
+    INSERT INTO users (email, google_sub, name, avatar_url)
+    SELECT $2::text, $1::text, $3::text, $4::text
+     WHERE NOT EXISTS (SELECT 1 FROM by_sub)
+    ON CONFLICT (email) DO UPDATE
+       SET google_sub = EXCLUDED.google_sub,
+           name       = COALESCE(users.name, EXCLUDED.name),
+           avatar_url = COALESCE(users.avatar_url, EXCLUDED.avatar_url)
+     WHERE users.google_sub IS NULL OR users.google_sub = EXCLUDED.google_sub
+    RETURNING id
+),
+resolved AS (
+    SELECT id FROM bound
+    UNION ALL
+    SELECT id FROM created
+)
+SELECT r.id::text AS user_id, COALESCE(s.tier, $5) AS tier
+FROM resolved r
+LEFT JOIN subscriptions s ON s.user_id = r.id
+"""
+
+
 async def get_pool() -> asyncpg.Pool:
     """取(或第一次建)SaaS 控制面 pool。沒設 DSN → SaasDBNotConfigured。"""
     global _pool
@@ -165,12 +216,51 @@ async def count_usage_24h(user_id: str) -> int:
         return await conn.fetchval(_COUNT_USAGE_SQL, user_id, timeout=QUERY_TIMEOUT_S)
 
 
-async def record_usage(user_id: str, api_key_id: str, action: str) -> None:
+async def upsert_google_user(
+    google_sub: str,
+    email: str,
+    name: str | None,
+    avatar_url: str | None,
+) -> asyncpg.Record | None:
+    """把一個 Google 身分換成我們自己的 user_id + tier(必要時建帳號)。
+
+    OAuth 路徑專用:`StockfactsGoogleProvider` 驗完 Google token 之後呼叫,
+    因為 `usage_events.user_id` 這類 FK 認的是我們的 uuid,不是 Google 的 sub。
+
+    語意細節(三段合併成一次 round-trip、為什麼只補不覆蓋、email 撞到別的
+    Google 帳號為什麼 fail closed)全部寫在 `_UPSERT_GOOGLE_USER_SQL` 上面。
+
+    Args:
+        google_sub: Google id_token 的 `sub`(該 Google 帳號的永久識別碼)。
+        email: 已驗證的 email —— 呼叫端必須先確認 `email_verified`,這裡不再檢查。
+        name / avatar_url: 顯示用資訊,可為 None(只在既有值為空時才補上)。
+
+    Returns:
+        Record(`user_id` text / `tier` text);
+        None 代表這個 email 已經綁在**別的** Google 帳號上 —— 呼叫端要拒絕放行。
+    """
+    pool = await get_pool()
+    async with pool.acquire(timeout=QUERY_TIMEOUT_S) as conn:
+        return await conn.fetchrow(
+            _UPSERT_GOOGLE_USER_SQL,
+            google_sub,
+            email,
+            name,
+            avatar_url,
+            DEFAULT_TIER,
+            timeout=QUERY_TIMEOUT_S,
+        )
+
+
+async def record_usage(user_id: str, api_key_id: str | None, action: str) -> None:
     """記一筆 MCP 用量,並(節流地)更新這把 key 的 last_used_at。
 
     Args:
         user_id: uuid 字串。
-        api_key_id: uuid 字串。
+        api_key_id: uuid 字串;**OAuth session 沒有 API key,傳 None**。
+            該欄位本來就 nullable(FK 是 ON DELETE SET NULL),而 SQL 裡的
+            `UPDATE api_keys ... WHERE id = $2::uuid` 在 NULL 時自然不匹配任何列,
+            所以同一個 statement 兩條路都適用,不必分岔。
         action: tool 名稱 —— 舊模型只記得到 "connect"(框架驗 token 時還不知道
             要呼叫哪個 tool),改在元件層計量之後才拿得到真正的粒度。
     """
