@@ -25,7 +25,13 @@ os.environ["MCP_BEARER_TOKEN"] = "client-token-fixture"
 # settings.py 其餘會被環境影響、且會改變測試行為的欄位,一併釘死在 settings.py 的
 # 預設值(乾淨環境下等同沒動,髒環境下才看得出差別)。
 os.environ["MCP_PER_USER_AUTH"] = "true"  # 影響 server.py import 期選哪個 verifier
-os.environ["MCP_AUTHORIZE_CACHE_TTL"] = "1800.0"
+os.environ["MCP_AUTH_CACHE_TTL"] = "300.0"
+os.environ["MCP_AUTH_STALE_TTL"] = "3600.0"
+os.environ["MCP_QUOTA_CACHE_TTL"] = "60.0"
 
-# 「沒設 DSN」才是測試要驗的狀態 —— 空字串 = SQL tool 停用。
+# 兩個 DSN 一律清空 —— 「沒設 DSN」正是測試要驗的狀態,而且真設了就會連出去:
+#   MCP_READONLY_DB_DSN  → execute_readonly_sql / describe_table 的 no-DSN 測試
+#   MCP_SAAS_DATABASE_URL → per-user 認證直讀 SaaS DB(測試都自己 patch settings 給值)
+# 開發機上這兩個很可能指著真的 Postgres,漏進來就是拿 prod 當測試 fixture。
 os.environ["MCP_READONLY_DB_DSN"] = ""
+os.environ["MCP_SAAS_DATABASE_URL"] = ""
