@@ -59,7 +59,11 @@ separate tool for each metric.
 - Gross / operating margin trend (expanding vs compressing).
 - FCF: use `free_cash_flow`, or `operating_cash_flow - |capex|` when it is null.
 - Net debt and share-count change (falling `shares_diluted` = buybacks).
-- **TTM = sum of the 4 most recent quarter rows; never mix an FY row.**
+- **TTM — there is no `Q4` row in this dataset, so never just add 4 quarters:**
+  `TTM = FY(prior fiscal year) + YTD(current FY) − YTD(prior FY, same quarters)`. The `FY` row
+  already contains its own Q1-Q3, hence the subtraction. If the prior `FY` or the matching
+  prior-year quarters are missing, quote the latest `FY` row and label it "FY, not TTM".
+  Balance-sheet lines are point-in-time — never sum them.
 
 **Step 4 — Events.** `list_earnings` for the next `report_date` (say so explicitly if it is
 imminent) and `list_dividends` for recent cash dividends.
@@ -116,7 +120,14 @@ Technical (price state), then events + macro context. (Price/macro are context, 
 `return_on_equity_ttm`), valuation (`pe_ratio` vs `forward_pe`, `peg_ratio`, `ev_to_ebitda`;
 loss-makers -> P/S + EV/EBITDA, label P/E "N/A (loss)"), balance-sheet health (net debt,
 current ratio), and FCF (`free_cash_flow`, or `operating_cash_flow - |capex|` when null).
-**TTM = sum of the 4 most recent quarter rows; never mix an FY row.**
+**TTM = `FY(prior fiscal year) + YTD(current FY) − YTD(prior FY, same quarters)`** — this
+dataset has **no `Q4` rows**, so summing "the 4 latest quarters" spans 15 months and
+double-counts; the `FY` row already includes its own Q1-Q3, hence the subtraction. Missing prior
+`FY`/quarters -> quote the latest `FY` and label it "FY, not TTM"; balance-sheet lines are
+point-in-time and are never summed. **Check `reporting_currency` before any valuation ratio:**
+statements are as-filed in the company's own currency with no FX conversion, so for a non-USD
+filer the price-based multiples (P/E, P/S, EV/Sales, EV/EBITDA) cannot be computed — say so
+instead of printing a number.
 
 **Lens 2 — Ownership (the differentiated lens).** Insider: `list_insider_trades` filtered to
 `transaction_code IN ('P','S')` only (P=open-market buy, S=sell; A/M/G/F are grants/exercises
@@ -159,12 +170,19 @@ directly instead of pulling rows. Examples:
    FROM insider_trades WHERE ticker='{ticker}'
      AND transaction_date >= CURRENT_DATE - INTERVAL '6 months'
      AND transaction_code IN ('P','S');`
-- Latest-quarter 13F net flow:
+- Latest **settled** quarter 13F net flow. Do NOT use a bare `MAX(quarter_end)`: 13F is due 45
+  days after quarter end, so the newest `quarter_end` in the table is a half-empty
+  early-filer sample and makes even mega-caps look barely held. Take the newest quarter whose
+  deadline has passed, falling back to `MAX` only when none has:
   `SELECT COUNT(*) FILTER (WHERE change_type IN ('new','increase')) adding,
-          COUNT(*) FILTER (WHERE change_type IN ('decrease','sold_out')) trimming,
+          COUNT(*) FILTER (WHERE change_type IN ('decrease','sold_all')) trimming,
           SUM(change_in_shares) net_share_change
    FROM institutional_holdings WHERE ticker='{ticker}'
-     AND quarter_end=(SELECT MAX(quarter_end) FROM institutional_holdings WHERE ticker='{ticker}');`
+     AND quarter_end=(
+       SELECT COALESCE(
+                MAX(quarter_end) FILTER (WHERE quarter_end <= CURRENT_DATE - INTERVAL '45 days'),
+                MAX(quarter_end))
+       FROM institutional_holdings WHERE ticker='{ticker}');`
 """
 
 
@@ -195,8 +213,13 @@ For EACH ticker run the short read (Steps 1-3), reusing one response per domain:
    returns, 52-week position, 50/200-day MA alignment.
 3. `get_income_statements` + `get_cash_flow_statements` (quarterly, ~8) — revenue & EPS
    (`eps_diluted`) YoY **vs the same quarter last year**, gross/operating margin trend, and
-   FCF (`free_cash_flow`, or `operating_cash_flow - |capex|` when null). TTM = sum of the 4
-   most recent quarter rows, never an FY row.
+   FCF (`free_cash_flow`, or `operating_cash_flow - |capex|` when null). TTM =
+   `FY(prior fiscal year) + YTD(current FY) − YTD(prior FY, same quarters)` — there is no `Q4`
+   row, so never just add 4 quarters (the `FY` row already includes its own Q1-Q3).
+   Statements are as-filed in each company's own `reporting_currency` with no FX conversion: if
+   the two filers report in different currencies, absolute figures (revenue, FCF) are NOT
+   comparable and price-based multiples are invalid for the non-USD one — say so and compare
+   only on currency-neutral axes (growth %, margins, momentum).
 
 Then emit a **comparison table** with one row per axis and a column per ticker:
 Revenue growth (YoY) | Operating margin | P/E (forward) | PEG | FCF (latest TTM) |
@@ -276,8 +299,10 @@ market-expectation read instead. Use tools for every number — never your memor
   Cast JSON-string numbers to float; skip illiquid contracts.
 - Fundamentals: `get_overview` + `get_income_statements` / `get_balance_sheets` /
   `get_cash_flow_statements` (quarterly, ~8) — revenue & EPS YoY vs the same quarter last year,
-  margin trend, net debt, FCF (`operating_cash_flow - |capex|` when null); **TTM = sum of the 4
-  latest quarter rows, never an FY row**; loss-makers drop P/E (label "N/A (loss)").
+  margin trend, net debt, FCF (`operating_cash_flow - |capex|` when null); **TTM =
+  `FY(prior fiscal year) + YTD(current FY) − YTD(prior FY, same quarters)`** — no `Q4` rows
+  exist, so never just add 4 quarters (the `FY` row already includes its own Q1-Q3), and
+  balance-sheet lines are point-in-time, never summed; loss-makers drop P/E (label "N/A (loss)").
 - Technical: ONE `list_daily_prices` (~1y) -> close vs 50/200-day MA, 52-week position, 1/3/6-month
   momentum, volume vs ~50-day average. `get_overview` `beta` for volatility.
 - Events: `list_earnings` (next report date — flag if imminent) + `list_dividends`. See
@@ -288,7 +313,11 @@ market-expectation read instead. Use tools for every number — never your memor
   `offset`; coverage skews mid/large-cap, so if there is no transcript, say so explicitly).
 - Valuation (FULL set, never one or two): from `get_overview` take P/E, forward_pe, peg, P/S, P/B,
   ev_to_ebitda; and **compute** EV = market cap + total debt − cash, EV/Sales = EV / TTM revenue,
-  P/FCF + FCF yield. Loss-makers → P/E & EV/EBITDA "N/M", lead P/S + EV/Sales + a Rule-of-40 line.
+  P/FCF + FCF yield. **Currency check first:** market cap is USD but the statements are as-filed
+  in the company's own `reporting_currency` (no FX conversion anywhere), so for a non-USD filer
+  every ratio that mixes the two (EV/Sales, P/FCF, FCF yield, P/E off statement EPS) is invalid —
+  state that it cannot be computed instead of printing a wrong number.
+  Loss-makers → P/E & EV/EBITDA "N/M", lead P/S + EV/Sales + a Rule-of-40 line.
 - Short interest & float: call `get_short_interest` for FINRA open-position history
   (current/prior short shares, short % of float, days-to-cover, settlement date) and `get_overview`
   for shares outstanding / float. Optionally call `get_short_volume` as a separately labelled

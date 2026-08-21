@@ -53,7 +53,7 @@ async def test_dictionary_content_anchors() -> None:
         "TTM",  # 財務:TTM 加總規則
         "45-day",  # 13F 法定申報滯後
         "not-covered",  # market_cap 缺 = 未覆蓋 ≠ 0
-        "fiscal_period",  # Q1-Q4 / FY 值域
+        "fiscal_period",  # Q1-Q3 / FY 值域(無 Q4)
         "transaction_code",  # 內部人代碼對照
         "change_type",  # 13F 增減值域
         "adj_close",  # prices 調整語意
@@ -253,3 +253,96 @@ async def test_start_here_content() -> None:
     assert "never zero" in honesty
     assert "as-of" in honesty or "as of" in honesty
     assert "45-day" in honesty or "filing lag" in honesty
+
+
+# ---- 契約回歸:釘住 2026-08 依 prod 實測地面真相修正的知識層說法 ----------
+# 這些測試存在的理由:知識層是 agent 唯一的語意來源,錯的說法會讓下游安靜地算錯
+# (跨 15 個月的假 TTM、對非 USD filer 算 P/E、篩不存在的 change_type)。
+
+
+async def test_dictionary_has_no_refuted_claims() -> None:
+    """字典不得再出現被 prod 推翻的說法(Q4 值域 / USD 正規化 / sold_out / Title Case topic)。"""
+    text = await _read_resource_text("data://dictionary")
+    for refuted in (
+        "Q1..Q4",  # fiscal_period 沒有 Q4
+        "Q1, Q2, Q3, Q4",  # 同上(另一種寫法)
+        "USD-normalized",  # 財報沒有換匯,存的是原幣
+        "sold_out",  # change_type 不存在此值(真值為 sold_all)
+        "Real Estate & Construction",  # news topic 不是 Title Case
+    ):
+        assert refuted not in text, f"data dictionary still carries refuted claim: {refuted!r}"
+
+
+async def test_dictionary_financials_period_and_ttm_contract() -> None:
+    """財報契約:結構性沒有 Q4;TTM 用 FY roll-forward(非 4 季相加)。"""
+    text = await _read_resource_text("data://dictionary")
+    for anchor in (
+        "there is NO `Q4` row",  # Q4 結構性不存在(ETL 只落地 Q1-Q3 + FY)
+        "prior fiscal year",  # roll-forward 的基準:去年 FY
+        "YTD",  # roll-forward 的年初至今項(current / prior)
+        "not TTM",  # 缺料時的 fallback 標示
+        "never sum them",  # 資產負債表為時點值,不可加總
+    ):
+        assert anchor in text, f"data dictionary missing financials anchor: {anchor!r}"
+
+
+async def test_dictionary_reporting_currency_contract() -> None:
+    """幣別契約:財報為 filer 原幣、平台不換匯,跨幣別比率無意義。"""
+    text = await _read_resource_text("data://dictionary")
+    for anchor in (
+        "reporting_currency",  # 每列都帶的幣別欄位
+        "NO FX conversion",  # 平台不做任何換匯
+        "reporting_currency != 'USD'",  # 跨幣別比率(P/E、P/S、EV/Sales)無意義的條件
+    ):
+        assert anchor in text, f"data dictionary missing currency anchor: {anchor!r}"
+
+
+async def test_dictionary_change_type_domain() -> None:
+    """13F change_type 真實值域:含 no_change / sold_all / NULL,且說明清倉要靠 filer 名單差集。"""
+    text = await _read_resource_text("data://dictionary")
+    for anchor in (
+        "no_change",  # 真值域成員
+        "sold_all",  # 真值域成員(取代不存在的 sold_out)
+        "NULL",  # 尚未計算變動 = NULL,非 no_change
+        "diff this quarter's filer set",  # 量測清倉家數的正確做法
+    ):
+        assert anchor in text, f"data dictionary missing change_type anchor: {anchor!r}"
+
+
+async def test_dictionary_news_topic_vocabulary() -> None:
+    """news topic 值域:15 個 snake_case 真值 + 大小寫敏感精確比對。"""
+    text = await _read_resource_text("data://dictionary")
+    for anchor in (
+        "energy_transportation",  # 只有真實清單才會出現的值
+        "retail_wholesale",
+        "economy_monetary",
+        "life_sciences",
+        "CASE-SENSITIVE",  # 逐字精確比對,對不上是靜默空清單
+    ):
+        assert anchor in text, f"data dictionary missing news-topic anchor: {anchor!r}"
+
+
+async def test_analyze_stock_full_13f_sql_uses_real_change_type() -> None:
+    """pro-tier 範例 SQL 直接交給 agent 執行,change_type 必須用真實值 sold_all。"""
+    text = await _render_prompt_text("analyze_stock_full", {"ticker": "AAPL"})
+    assert "sold_all" in text, "13F 範例 SQL 應以 sold_all 統計 trimming"
+    assert "sold_out" not in text, "sold_out 不存在,會恆 0 命中"
+
+
+async def test_prompts_and_playbook_share_the_ttm_formula() -> None:
+    """四條 prompt 與 playbook 的 TTM 說法必須與字典同一條公式,不得殘留「4 季相加」。"""
+    formula = "YTD(prior FY, same quarters)"
+    texts = {
+        "analyze_stock": await _render_prompt_text("analyze_stock", {"ticker": "AAPL"}),
+        "analyze_stock_full": await _render_prompt_text("analyze_stock_full", {"ticker": "AAPL"}),
+        "compare_stocks": await _render_prompt_text(
+            "compare_stocks", {"ticker_a": "KO", "ticker_b": "PEP"}
+        ),
+        "build_stock_report": await _render_prompt_text("build_stock_report", {"ticker": "AAPL"}),
+        "data://analysis-playbook": await _read_resource_text("data://analysis-playbook"),
+    }
+    for name, text in texts.items():
+        assert formula in text, f"{name} missing the TTM roll-forward formula"
+        assert "Q4" in text, f"{name} should state that no Q4 row exists"
+        assert "sum of the 4" not in text, f"{name} still says TTM = sum of 4 quarters"
+        assert "never mix an FY row" not in text, f"{name} still forbids the FY row outright"

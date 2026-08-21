@@ -39,8 +39,13 @@ units they are in, and where they will trip you up.
   attributed as vendor estimates with their as-of date. There is NO full analyst dataset:
   no buy/hold/sell ratings, no analyst counts, no revenue forecasts, no estimate-revision
   history. Never invent your own forecast or price target.
-- **Money is raw USD.** All monetary figures are the actual dollar amount, NOT thousands and
-  NOT millions. `revenue = 391035000000` means $391.035B. Share counts are actual shares.
+- **Money is stored in raw units — NOT thousands and NOT millions.** `revenue = 391035000000`
+  means 391.035B, not 391 thousand. Share counts are actual shares.
+- **Currency is NOT uniformly USD.** Prices, 13F `market_value`, and every `company_overview`
+  figure are USD. **The three financial statements are in each filer's own reporting currency**
+  and no FX conversion is performed anywhere on this platform — read the row's
+  `reporting_currency` before you quote, sum, or compare a statement figure (see the Financials
+  domain for the cross-currency trap).
 - **Dates** are `YYYY-MM-DD` ISO strings. Timestamps are ISO 8601 (often UTC, `...Z`).
 - **null means "not available", never zero.** A missing value is unknown / not-covered.
   Do not coerce null to 0 in any sum, ratio, or average — drop it and say it is missing.
@@ -95,14 +100,39 @@ Which tools serve this domain: `list_daily_prices`, `get_latest_price`, `list_ho
 Which tools serve this domain: `get_income_statements`, `get_balance_sheets`,
 `get_cash_flow_statements`, `get_latest_period`.
 
-- Source: SEC XBRL filings, **USD-normalized** (multi-currency ADRs are already converted to
-  USD; the row's `reporting_currency` tells you the native filing currency).
-- **`fiscal_period` domain:** `Q1`, `Q2`, `Q3`, `Q4` (quarters) or `FY` (full year). Each row
-  also carries `fiscal_year` and `period_end`. The `period` arg maps `"quarterly"` to
-  `Q1..Q4` and `"annual"` to `FY`.
-- **TTM (trailing twelve months) = sum of the 4 most recent *quarter* rows. NEVER mix an FY
-  row into a TTM sum** (double counts). When computing TTM EPS, sum the 4 quarterly
-  `eps_diluted` (or use `net_income / shares_diluted`).
+- Source: SEC XBRL filings, **as filed — in each company's own reporting currency. This platform
+  performs NO FX conversion.** Every row carries `reporting_currency` (ISO 4217). The vast
+  majority is `USD`, but ADRs and foreign private issuers file in their own currency: `CAD`,
+  `EUR`, `CNY`, `GBP`, `BRL`, `JPY`, `AUD`, `CHF`, `HKD`, ... (e.g. TM's statements are in JPY).
+  Read `reporting_currency` off the row before you quote a figure, and state the currency.
+- **Cross-currency trap (this silently produces nonsense):** prices, 13F `market_value`, and
+  `company_overview` are USD, while the statements may not be. **Any ratio that mixes a price
+  with a statement figure — P/E, P/S, EV/Sales, EV/EBITDA, market-cap-to-revenue — is
+  meaningless when `reporting_currency != 'USD'`.** Check the currency first; if it is not USD,
+  say plainly that the ratio cannot be computed here (there is no FX rate anywhere in this
+  dataset) and omit it rather than printing a wrong number. For the same reason, never rank a
+  non-USD filer's absolute revenue / profit against USD peers as if the units matched.
+- **`fiscal_period` domain: `Q1`, `Q2`, `Q3`, or `FY` — there is NO `Q4` row.** Most filers
+  disclose the fourth quarter only inside the 10-K, so the pipeline lands Q1-Q3 plus the
+  full-year `FY` row and nothing else. This is structural, not a coverage gap. `period="quarterly"`
+  returns `Q1,Q2,Q3`; `period="annual"` returns `FY`; passing `"Q4"` is accepted by the API but
+  always comes back `[]`. Each row also carries `fiscal_year` and `period_end`.
+- **TTM (trailing twelve months) — use the roll-forward, NOT "the 4 latest quarter rows".**
+  Because no `Q4` row exists, adding the 4 most recent quarter rows spans 15 months and
+  double-counts a quarter. The correct formula is:
+  `TTM = FY(prior fiscal year) + YTD(current FY, Q1..Qn) − YTD(prior FY, same Q1..Qn)`
+  e.g. when the latest quarter is FY2026 Q3:
+  `TTM = FY2025 + (2026Q1+2026Q2+2026Q3) − (2025Q1+2025Q2+2025Q3)`, covering exactly
+  2025Q4..2026Q3. **The `FY` row already contains its own Q1-Q3**, which is why the prior year's
+  YTD must be subtracted — and why an `FY` row can never simply be added on top of quarters.
+  - Fallback: if `FY(Y-1)` or the matching prior-year quarters are missing, do not improvise a
+    sum. Quote the latest `FY` row instead and label it explicitly
+    **"FY (through `period_end`), not TTM"**.
+  - Flow vs stock: income-statement and cash-flow lines are **flows** and may be added across
+    periods; balance-sheet lines are **point-in-time stocks — never sum them**, take the latest
+    row as-is.
+  - TTM EPS: run the same roll-forward on `eps_diluted`, or divide TTM `net_income` by the
+    **latest** row's `shares_diluted`.
 - Income fields: `revenue`, `cost_of_revenue`, `gross_profit`, `operating_expenses`,
   `rd_expense`, `sga_expense`, `operating_income`, `interest_expense`, `tax_expense`,
   `net_income`, `eps_basic`, `eps_diluted`, `shares_basic`, `shares_diluted`. Use
@@ -181,9 +211,20 @@ Which tools serve this domain: `list_13f_holders`, `list_13f_portfolio`,
   filer rotation.
 - Fields: `filer_cik`, `filer_name`, `ticker`, `cusip`, `quarter_end`, `shares`,
   `market_value` (USD), `change_in_shares`, `change_type`.
-- **`change_type` domain:** `new` / `increase` / `decrease` / `sold_out` (some endpoints
-  surface the SEC labels `NEW` / `ADD` / `REDUCE` / `EXIT` — same meaning). Adders ≫ trimmers
-  with positive net shares = bullish; two+ consecutive quarters of net adding = stronger.
+- **`change_type` domain:** `new` / `increase` / `decrease` / `no_change` / `sold_all`, **plus
+  `NULL`**. Those are the only values that exist (verified against prod) — there is no
+  upper-case variant and no separate "exited" code; filtering on anything else silently matches
+  zero rows.
+  - `NULL` means the quarter-over-quarter change was never computed for that row — e.g. the
+    first quarter a filer appears in our history. Treat it as unknown, **not** as `no_change`.
+  - `sold_all` means the filer explicitly reported the position at 0 shares (or a null `shares`)
+    for that quarter.
+  - **Counting exits from `change_type` alone undercounts badly:** a filer that fully liquidates
+    normally just stops listing the security next quarter, so no `sold_all` row is ever written.
+    To measure "how many holders exited", diff this quarter's filer set for the ticker against
+    the previous quarter's.
+  - Adders ≫ trimmers with positive net shares = bullish; two+ consecutive quarters of net
+    adding = stronger.
 - **13F is long US equity positions only** — no shorts, no options, no non-US holdings. A 13F
   drop does not necessarily mean a bearish bet (could be a sale, a hedge unwind, or a
   reallocation).
@@ -312,9 +353,15 @@ Which tools serve this domain: `get_company_news` (single ticker), `get_market_n
   per-ticker `sentiment` + `label`. Do not present these as platform-computed.
 - Article fields: `url` (UNIQUE — this IS the link to the publisher; the source gives only title +
   `summary`, never full body text), `title`, `summary`, `source`, `source_domain`,
-  `published_at`, `topics` (JSONB `[{topic, relevance}]`). `get_market_news` can filter by
-  `topic` (e.g. `earnings`, `ipo`, `mergers_and_acquisitions`, `financial_markets`,
-  `technology`).
+  `published_at`, `topics` (JSONB `[{topic, relevance}]`).
+- **`get_market_news`'s `topic` filter is an exact, CASE-SENSITIVE string match** against the
+  lower snake_case `topics[].topic` values — a near miss (Title Case, spaces, `&`, a plural)
+  does not error, it just returns an empty list. The full live vocabulary is: `financial_markets`,
+  `earnings`, `finance`, `technology`, `life_sciences`, `energy_transportation`,
+  `retail_wholesale`, `economy_macro`, `manufacturing`, `real_estate`,
+  `mergers_and_acquisitions`, `economy_fiscal`, `ipo`, `economy_monetary`, `blockchain`.
+  If unsure, call once with no `topic`, read the `topics[].topic` values off the returned
+  articles, and pass one back verbatim.
 - **Retention: 12 months** (older articles are trimmed weekly). Do not expect multi-year news
   history.
 - **Cadence: refreshed every 4 hours — labelled by fetch time, NOT real-time.** The platform
@@ -467,7 +514,13 @@ and volume vs its ~50-day average. Do not call a separate tool per metric.
 - Gross / operating margin trend (expanding vs compressing).
 - FCF: use `free_cash_flow`, or `operating_cash_flow - |capex|` when it is null.
 - Net debt and share-count change (falling `shares_diluted` = buybacks).
-- **TTM = sum of the 4 most recent quarter rows; never mix an FY row.**
+- **TTM — there is no `Q4` row, so never just add 4 quarters:**
+  `TTM = FY(prior fiscal year) + YTD(current FY) − YTD(prior FY, same quarters)`. The `FY` row
+  already contains its own Q1-Q3, hence the subtraction. If the prior `FY` or the matching
+  prior-year quarters are missing, quote the latest `FY` row and label it "FY, not TTM".
+  Balance-sheet lines are point-in-time — never sum them.
+- Statements are filed in the company's own `reporting_currency` (no FX conversion): for a
+  non-USD filer, price-based ratios (P/E, P/S, EV/Sales) cannot be computed — say so.
 
 ## Step 4 — Events
 
