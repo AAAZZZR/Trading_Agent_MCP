@@ -8,7 +8,7 @@
 [![MCP Registry](https://img.shields.io/badge/MCP-io.github.AAAZZZR%2Fstockfacts-635BFF.svg)](https://registry.modelcontextprotocol.io)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB.svg)](https://www.python.org/)
 
-**Hosted service:** `https://trading-agent-mcp.zeabur.app/mcp` · **Website:** [Stockfacts](https://trading-agent-home.zeabur.app)
+**Hosted service:** `https://mcp.livermore.club/mcp` · **Website:** [Stockfacts](https://livermore.club)
 
 **52 tools · 5 prompts · 3 resources.** Every tool is read-only. Prices and fundamentals are
 end-of-day (not real-time). `null` always means *not covered* — never zero.
@@ -83,7 +83,7 @@ The three surfaces — **52 tools**, **5 prompts**, **3 resources** — are deta
 
 ## Quick start — hosted
 
-1. Create an API key on the [Stockfacts website](https://trading-agent-home.zeabur.app).
+1. Create an API key on the [Stockfacts website](https://livermore.club).
 2. Point your MCP client at the hosted endpoint with the key as a Bearer token.
 
 **Claude Desktop** (`claude_desktop_config.json`) via [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
@@ -95,7 +95,7 @@ The three surfaces — **52 tools**, **5 prompts**, **3 resources** — are deta
       "command": "npx",
       "args": [
         "-y", "mcp-remote",
-        "https://trading-agent-mcp.zeabur.app/mcp",
+        "https://mcp.livermore.club/mcp",
         "--header", "Authorization: Bearer ${STOCKFACTS_KEY}"
       ],
       "env": { "STOCKFACTS_KEY": "sk_your_key_here" }
@@ -105,7 +105,7 @@ The three surfaces — **52 tools**, **5 prompts**, **3 resources** — are deta
 ```
 
 **claude.ai / any client with native remote-MCP support:** add the URL
-`https://trading-agent-mcp.zeabur.app/mcp` and set the `Authorization: Bearer <key>` header.
+`https://mcp.livermore.club/mcp` and set the `Authorization: Bearer <key>` header.
 
 Once connected, call **`start_here`** first — it returns the product scope, a tool-selection
 guide, and end-to-end workflows.
@@ -475,7 +475,7 @@ Form 4、FINRA、市場行情)先被解析、正規化成穩定結構,再以唯�
 
 ## 快速開始 —— 使用托管服務
 
-1. 在 [Stockfacts 網站](https://trading-agent-home.zeabur.app)建立一把 API key。
+1. 在 [Stockfacts 網站](https://livermore.club)建立一把 API key。
 2. 把你的 MCP client 指向托管接口,key 當 Bearer token 帶上。
 
 **Claude Desktop**(`claude_desktop_config.json`,經 [`mcp-remote`](https://www.npmjs.com/package/mcp-remote)):
@@ -487,7 +487,7 @@ Form 4、FINRA、市場行情)先被解析、正規化成穩定結構,再以唯�
       "command": "npx",
       "args": [
         "-y", "mcp-remote",
-        "https://trading-agent-mcp.zeabur.app/mcp",
+        "https://mcp.livermore.club/mcp",
         "--header", "Authorization: Bearer ${STOCKFACTS_KEY}"
       ],
       "env": { "STOCKFACTS_KEY": "sk_你的_key" }
@@ -497,7 +497,7 @@ Form 4、FINRA、市場行情)先被解析、正規化成穩定結構,再以唯�
 ```
 
 **claude.ai / 任何原生支援 remote MCP 的 client:** 加入 URL
-`https://trading-agent-mcp.zeabur.app/mcp`,設定 `Authorization: Bearer <key>` header。
+`https://mcp.livermore.club/mcp`,設定 `Authorization: Bearer <key>` header。
 
 連上後先呼叫 **`start_here`**——它回傳產品範圍、選工具指南與端到端工作流。
 

@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # (使用者重新授權一次即可),這是刻意的取捨 —— 換來零額外密鑰管理。
     # ------------------------------------------------------------------
 
-    # 對外可達的 base URL(無尾斜線),例如 https://trading-agent-mcp.zeabur.app。
+    # 對外可達的 base URL(無尾斜線),例如 https://mcp.livermore.club。
     # OAuth 的 issuer、metadata 位址與 Google redirect URI 全部由它推導;
     # redirect URI = <這個值>/auth/callback,必須逐字加進 GCP OAuth client 的
     # 「Authorized redirect URIs」,否則 Google 會拒絕整個授權流程。

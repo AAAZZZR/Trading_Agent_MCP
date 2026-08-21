@@ -3,12 +3,12 @@
   "name": "io.github.AAAZZZR/stockfacts",
   "title": "Stockfacts",
   "description": "US stock market data for AI agents: SEC filings, financials, insider trades, 13F, options, macro.",
-  "version": "1.0.0",
-  "websiteUrl": "https://trading-agent-home.zeabur.app",
+  "version": "1.1.0",
+  "websiteUrl": "https://livermore.club",
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://trading-agent-mcp.zeabur.app/mcp",
+      "url": "https://mcp.livermore.club/mcp",
       "headers": [
         {
           "name": "Authorization",
