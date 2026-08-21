@@ -8,7 +8,7 @@ MCP server 實際作答,再用 LLM judge 對照 rubric 評分。量測**答對�
 ## 先決條件
 
 1. **`.env` 已設**(本 repo 根目錄)。MCP server 連後端 API 需要:
-   - `MCP_API_BASE_URL` —— 指向 prod API(`https://trading-agent-api.zeabur.app`)或本機 API。
+   - `MCP_API_BASE_URL` —— 指向 prod API(`https://api.livermore.club`)或本機 API。
    - `MCP_API_AUTH_TOKEN` —— API 的 bearer token(= Trading_Agent_API 的 `API_BEARER_TOKEN`)。
    - `MCP_PER_USER_AUTH=false` + `MCP_BEARER_TOKEN=<同上 token>` —— 讓 stdio 下兩個 pro 工具
      (`execute_readonly_sql` / `describe_table`)也可見可用。
