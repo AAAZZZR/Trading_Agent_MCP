@@ -2,8 +2,9 @@
 
 跟 DB I/O 解耦,方便單元測試。三件事:
 
-1. `validate_select_only(sql)` —— 用 sqlparse 解,只放行 SELECT / WITH ... SELECT,
-   拒絕多 statement、拒絕含敏感 function(pg_sleep / copy / lo_import 等)。
+1. `validate_select_only(sql)` —— 用 sqlparse 解析後**遞迴走訪整棵 token 樹**,
+   任何一層(CTE / 子查詢 / 括號內)出現寫入語意就拒。不是「只看開頭關鍵字」——
+   舊版那樣做會被 `WITH t AS (DELETE ... RETURNING *) SELECT * FROM t` 整個繞過。
 2. `clamp_limit(sql)` —— 用 sqlparse 取頂層 LIMIT 算上界(無→DEFAULT_LIMIT,
    有 N→min(N, MAX_LIMIT)),再把查詢包成 `SELECT * FROM (<sql>) _ LIMIT 上界`,
    外層硬界一定生效(關死子查詢內 LIMIT 繞過)。
@@ -14,9 +15,12 @@ DB role + sqlparse + statement_timeout = 三層防護。本檔只負責第二層
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any
+
 import sqlparse
 from sqlparse.sql import Statement
-from sqlparse.tokens import DML, Keyword, Number
+from sqlparse.tokens import DDL, DML, Keyword, Number
 
 # ---- 常數 -----------------------------------------------------------------
 
@@ -24,23 +28,67 @@ DEFAULT_LIMIT = 1000
 MAX_LIMIT = 10000
 MAX_OUTPUT_BYTES = 100 * 1024  # 100KB
 
-# 敏感 function / keyword 黑名單 —— 即使 readonly role 擋 DML,這些 SELECT-context
-# 下仍可能炸 DB 或讀檔。比對時轉小寫做 substring 檢查(粗暴但夠用)。
-# 注意:做 substring match 會誤殺欄位名(例如有人欄位叫 copy_url),但這層只是
-# 第二道防線,真的炸不到 DB(role 擋住);誤殺再放寬。
+# 敏感 function 黑名單 —— 即使 readonly role 擋 DML,這些在 SELECT-context 下仍可能
+# 炸 DB、讀檔、或**把字串當 SQL 執行**繞過本層 parser(query_to_xml 就是這種)。
+# 比對時轉小寫做 substring 檢查(粗暴但夠用)。
+# 注意:做 substring match 會誤殺欄位名(例如有人欄位叫 copy_url / nextval_seq),
+# 但這層只是第二道防線,真的炸不到 DB(role 擋住);誤殺再放寬。
 _BLOCKED_FUNCTIONS = (
-    "pg_sleep",
+    "pg_sleep",  # 也涵蓋 pg_sleep_for / pg_sleep_until(substring 比對)
+    "pg_read_file",  # 注意:pg_read_binary_file 不含此子字串,兩個都要列
     "pg_read_server_files",
     "pg_read_binary_file",
     "pg_ls_dir",
     "pg_stat_file",
     "lo_import",
     "lo_export",
+    "lo_get",
+    "lo_put",
+    "lo_unlink",
     "dblink",
+    "query_to_xml",  # 會把傳入字串當 SQL 執行 —— 完全繞過本檔的 token 掃描
+    "pg_terminate_backend",
+    "pg_cancel_backend",
+    "pg_reload_conf",
+    "pg_logical_emit_message",
+    "pg_advisory_lock",
+    "nextval",  # 序號推進 = 有副作用,不是唯讀
+    "setval",
 )
 
-# COPY 是 statement 級不是 function,單獨檢查(只有 "COPY tbl ..." 形態)
-_BLOCKED_STATEMENTS = ("copy",)
+# 遞迴 token 掃描用的 keyword 黑名單(比對 `token.normalized.upper()`,精確相等而非
+# substring,所以欄位名 copy_url / start_date 這種不會被誤殺 —— 它們是 Name 不是 Keyword)。
+# 刻意**不含** FETCH(`FETCH FIRST n ROWS ONLY` 是合法 SELECT 語法)、
+# 也不含 SET / ANALYZE(誤殺風險 > 收益,statement 開頭那層已經擋掉 `SET ...`)。
+_BLOCKED_KEYWORDS = frozenset(
+    {
+        "COPY",
+        "GRANT",
+        "REVOKE",
+        "INTO",  # `SELECT ... INTO new_table` 會建表寫資料
+        "CALL",
+        "DO",
+        "EXECUTE",
+        "PREPARE",
+        "DEALLOCATE",
+        "DECLARE",
+        "LISTEN",
+        "NOTIFY",
+        "UNLISTEN",
+        "LOCK",
+        "VACUUM",
+        "REINDEX",
+        "CLUSTER",
+        "REFRESH",
+        "COMMIT",
+        "ROLLBACK",
+        "SAVEPOINT",
+        "BEGIN",
+        "START",
+        "DISCARD",
+        "IMPORT",
+    }
+)
 
 
 class SQLValidationError(ValueError):
@@ -51,12 +99,16 @@ class SQLValidationError(ValueError):
 
 
 def validate_select_only(sql: str) -> None:
-    """SQL 必須是單一 SELECT(可帶 WITH CTE)。不通過 raise SQLValidationError。
+    """SQL 必須是單一唯讀 SELECT(可帶 WITH CTE)。不通過 raise SQLValidationError。
 
     流程:
       1. sqlparse.parse() 切 statements,移除空白後必須 == 1 個。
-      2. 該 statement 第一個有意義的 keyword 必須是 SELECT 或 WITH。
-      3. 整串小寫做 blocklist substring 比對(pg_sleep / copy / lo_import 等)。
+      2. 該 statement 第一個有意義的 keyword 必須是 SELECT 或 WITH(早期 friendly error)。
+      3. **遞迴走訪整棵 token 樹**:任何一層出現 DML(非 SELECT)/ DDL / 黑名單 keyword
+         就拒,並且整串至少要有一個 SELECT。這步是真正的防護 —— 只看開頭關鍵字時
+         `WITH t AS (DELETE FROM companies RETURNING *) SELECT * FROM t` 會整個放行。
+      4. 整串小寫做 function blocklist substring 比對(pg_sleep / query_to_xml 等);
+         字串字面值裡的 SQL(query_to_xml 那種)不會被 tokenize 成 DML,只能靠這層。
     """
     if not sql or not sql.strip():
         raise SQLValidationError("SQL is empty.")
@@ -82,12 +134,72 @@ def validate_select_only(sql: str) -> None:
             f"Only SELECT (or WITH ... SELECT) is allowed; got {first_keyword}."
         )
 
+    _reject_write_semantics(stmt)
+
     # 黑名單比對:lower-case substring。複雜情境(例如 identifier 帶 "pg_sleep")
     # 會誤殺,但寧錯殺不放過 —— DB role 是真正的最後防線。
     lowered = sql.lower()
-    for blocked in _BLOCKED_FUNCTIONS + _BLOCKED_STATEMENTS:
+    for blocked in _BLOCKED_FUNCTIONS:
         if blocked in lowered:
-            raise SQLValidationError(f"Use of '{blocked}' is not allowed.")
+            raise SQLValidationError(
+                f"Use of '{blocked}' is not allowed: this tool only runs read-only "
+                "SELECT queries with no side effects."
+            )
+
+
+def _iter_all_tokens(token: Any) -> Iterator[Any]:
+    """深度優先走訪 token 與其所有子 token。
+
+    sqlparse 會把 CTE / 子查詢 / 括號包成 group token(Parenthesis / Identifier /
+    IdentifierList …),group 本身 `ttype is None`、真正的關鍵字藏在 `.tokens` 裡。
+    只掃 statement 最外層 token list 會完全看不到 `WITH t AS (DELETE ...)` 的 DELETE。
+    """
+    yield token
+    for child in getattr(token, "tokens", ()):
+        yield from _iter_all_tokens(child)
+
+
+def _reject_write_semantics(stmt: Statement) -> None:
+    """遞迴掃描 statement,任何一層有寫入語意就 raise;並要求至少存在一個 SELECT。
+
+    sqlparse 0.5 的實測分類(這些規則就是照著它訂的):
+      - `WITH t AS (DELETE ...)` 的 DELETE  → Token.Keyword.DML
+      - `WITH t AS (SELECT 1) INSERT INTO`  → INSERT 是 Keyword.DML、INTO 是 Keyword
+      - `SELECT 1 INTO evil_table`          → INTO 是 Keyword
+      - `TRUNCATE` / `DROP` / `CREATE` / `ALTER` → Keyword.DDL
+      - `COPY ... TO ...`                   → COPY 是 Keyword
+      - `GRANT` / `REVOKE`                  → Keyword.DCL(是 Keyword 的 subtype,吃得到)
+    """
+    has_select = False
+
+    for token in _iter_all_tokens(stmt):
+        ttype = token.ttype
+        if ttype is None:  # group token,本身沒語意,子 token 會另外走到
+            continue
+        normalized = token.normalized.upper()
+
+        if ttype in DML:
+            if normalized == "SELECT":
+                has_select = True
+                continue
+            raise SQLValidationError(
+                f"Only read-only SELECT is allowed; found a '{normalized}' statement. "
+                "Writes are rejected even when nested inside a CTE or subquery."
+            )
+        if ttype in DDL:
+            raise SQLValidationError(
+                f"Schema-changing statements are not allowed; found '{normalized}'."
+            )
+        if ttype in Keyword and normalized in _BLOCKED_KEYWORDS:
+            raise SQLValidationError(
+                f"'{normalized}' is not allowed: this tool only runs read-only SELECT "
+                "queries. Rewrite the query without it."
+            )
+
+    if not has_select:
+        raise SQLValidationError(
+            "No SELECT was found; submit a read-only SELECT (optionally with CTEs)."
+        )
 
 
 def _first_significant_keyword(stmt: Statement) -> str | None:

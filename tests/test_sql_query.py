@@ -30,6 +30,54 @@ def test_validate_accepts_select(sql: str) -> None:
     validate_select_only(sql)  # 不 raise = OK
 
 
+# ---- validate_select_only:防護不可做過頭(合法用法護欄)---------------------
+#
+# 上面那組遞迴掃描把「任何一層的寫入語意」都擋掉,很容易順手誤殺正常 SELECT。
+# 這組是反向護欄:真實 agent 會下的複雜但唯讀的查詢,必須全部照過。
+# 特別注意最後兩筆 —— 字串字面值裡的 DELETE / INTO 不可被當成關鍵字誤殺。
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # 普通 SELECT
+        "SELECT ticker, name FROM companies WHERE sector = 'Technology'",
+        # WITH RECURSIVE CTE
+        "WITH RECURSIVE t(n) AS ("
+        "SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 10"
+        ") SELECT * FROM t",
+        # 多層 CTE 全是 SELECT
+        "WITH a AS (SELECT 1 AS x), b AS (SELECT 2 AS y) SELECT * FROM a JOIN b ON true",
+        # 子查詢
+        "SELECT * FROM companies WHERE ticker IN (SELECT ticker FROM prices_daily)",
+        # UNION ALL
+        "SELECT 1 UNION ALL SELECT 2",
+        # 括號包起來的 UNION
+        "(SELECT 1) UNION (SELECT 2)",
+        # window function
+        "SELECT ticker, row_number() OVER (PARTITION BY sector ORDER BY name) AS rn "
+        "FROM companies",
+        # FETCH FIRST n ROWS ONLY(所以 FETCH 不可進 keyword 黑名單)
+        "SELECT * FROM companies ORDER BY ticker FETCH FIRST 10 ROWS ONLY",
+        # VALUES 當衍生表
+        "SELECT * FROM (VALUES (1),(2)) v(x)",
+        # ORDER BY / OFFSET / LIMIT
+        "SELECT * FROM companies ORDER BY ticker OFFSET 5 LIMIT 10",
+        # 以區塊註解開頭
+        "/* pick tech names */ SELECT ticker FROM companies",
+        # 字串字面值裡的關鍵字不可誤殺
+        "SELECT 'delete me' AS note",
+        "SELECT * FROM companies WHERE ticker = 'INTO'",
+        # 真實會用到的欄位名(open/high/low/close/adj_close 都不是 sqlparse 關鍵字)
+        "SELECT open, high, low, close, volume, adj_close FROM prices_daily "
+        "WHERE ticker = 'AAPL'",
+    ],
+)
+def test_validate_accepts_legitimate_complex_select(sql: str) -> None:
+    """防護不可誤殺正常唯讀查詢 —— 這組全綠才算沒把 SQL tool 做廢。"""
+    validate_select_only(sql)  # 不 raise = OK
+
+
 # ---- validate_select_only:拒絕 destructive --------------------------------
 
 
@@ -94,6 +142,73 @@ def test_validate_rejects_empty(sql: str) -> None:
 def test_validate_rejects_sensitive(sql: str) -> None:
     with pytest.raises(SQLValidationError):
         validate_select_only(sql)
+
+
+# ---- validate_select_only:繞過案例(舊版「只看開頭關鍵字」全都放行)-----------
+#
+# 舊實作只檢查「第一個有意義的 keyword 是不是 SELECT / WITH」+ 對整串做小寫 substring
+# 黑名單,於是 `WITH t AS (DELETE FROM companies RETURNING *) SELECT * FROM t` 直接通過
+# ——「第一層防護」其實是假的,全靠 readonly DB role 兜底。修正後改成遞迴走訪整棵
+# token 樹,任何一層出現寫入語意就拒。以下每一條在舊版都是綠的(= 放行),現在必須全紅。
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # --- CTE 內藏 DML(舊版最致命的破口)---
+        "WITH t AS (DELETE FROM companies RETURNING *) SELECT * FROM t",
+        "WITH t AS (UPDATE companies SET ticker='X' RETURNING *) SELECT count(*) FROM t",
+        "WITH t AS (INSERT INTO companies (ticker) VALUES ('X') RETURNING *) SELECT * FROM t",
+        "WITH a AS (SELECT 1), b AS (DELETE FROM companies RETURNING *) SELECT * FROM a, b",
+        # --- CTE 之後接 DML(data-modifying CTE 的另一種寫法)---
+        "WITH t AS (SELECT 1) INSERT INTO companies SELECT * FROM t",
+        "WITH t AS (SELECT 1) UPDATE companies SET ticker='X'",
+        "WITH t AS (SELECT 1) DELETE FROM companies",
+        # --- SELECT ... INTO 會建表寫資料 ---
+        "SELECT 1 INTO evil_table",
+        "SELECT * INTO evil_table FROM companies",
+        # --- 多 statement 拼接 ---
+        "SELECT * FROM companies; DROP TABLE companies",
+        "SELECT * FROM companies; DELETE FROM companies",
+        # --- COPY(含把 SELECT 包進括號的變形)---
+        "COPY companies TO '/tmp/x'",
+        "COPY (SELECT * FROM companies) TO '/tmp/x'",
+        # --- DDL ---
+        "TRUNCATE companies",
+        "DROP TABLE companies",
+        "CREATE TABLE evil (a int)",
+        "ALTER TABLE companies ADD COLUMN evil int",
+        # --- DCL ---
+        "GRANT ALL ON companies TO PUBLIC",
+        "REVOKE ALL ON companies FROM PUBLIC",
+        # --- 程序 / 動態執行 ---
+        "DO $$ BEGIN PERFORM 1; END $$",
+        "CALL some_proc()",
+        "EXECUTE stmt",
+        # --- 會炸 DB / 讀檔 / 有副作用的 function ---
+        "SELECT pg_sleep(10)",
+        "SELECT pg_sleep_for('10 seconds')",
+        "SELECT pg_read_file('/etc/passwd')",
+        "SELECT lo_import('/etc/passwd')",
+        # query_to_xml 會把字串當 SQL 執行 —— parser 看不到那個 DELETE,只能靠函數黑名單
+        "SELECT query_to_xml('DELETE FROM companies', true, true, '')",
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity",
+        "SELECT nextval('some_seq')",
+        "SELECT * FROM dblink('...', 'DELETE FROM companies') AS t(x int)",
+        # --- 維護指令 ---
+        "VACUUM companies",
+    ],
+)
+def test_validate_rejects_known_bypasses(sql: str) -> None:
+    """已知繞過手法必須全部擋在第一層(不是靠 readonly role 兜底)。"""
+    with pytest.raises(SQLValidationError):
+        validate_select_only(sql)
+
+
+def test_validate_rejects_when_no_select_present() -> None:
+    """通過開頭關鍵字檢查、但整串沒有任何 SELECT → 一樣拒(規則 4 的兜底)。"""
+    with pytest.raises(SQLValidationError, match="No SELECT"):
+        validate_select_only("WITH t AS (VALUES (1,2)) TABLE t")
 
 
 # ---- clamp_limit:沒寫 → 外層補 default -----------------------------------

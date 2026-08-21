@@ -21,6 +21,7 @@ import pytest
 from trading_agent_mcp import db as db_module
 from trading_agent_mcp import tools
 from trading_agent_mcp.server import mcp
+from trading_agent_mcp.settings import settings
 
 # ---- 註冊性 --------------------------------------------------------------
 
@@ -205,8 +206,15 @@ async def test_rejected_queries_return_error_without_db_call(
 
 
 async def test_no_dsn_returns_friendly_error(patched_pool) -> None:
-    # 用真的 get_pool;settings.mcp_readonly_db_dsn 預設為 ""(conftest 沒注入)
-    result = await tools.execute_readonly_sql(query="SELECT 1")
+    """用真的 get_pool,驗「DSN 沒設 → friendly error」而不是炸給 LLM。
+
+    這裡**必須**明確把 settings.mcp_readonly_db_dsn 壓成 ""。conftest 已經清掉
+    `MCP_READONLY_DB_DSN` 環境變數,但 settings 是 import 期就實例化的 module-level
+    單例、又會讀 `.env` 檔 —— 少了這層 patch,只要跑測試的機器上有真的 DSN,這個測試
+    就會繞過 mock 去連真的 Postgres(慢、外部相依、還可能打到 prod)。
+    """
+    with patch.object(settings, "mcp_readonly_db_dsn", ""):
+        result = await tools.execute_readonly_sql(query="SELECT 1")
     payload = json.loads(result)
     assert "error" in payload
     assert "MCP_READONLY_DB_DSN" in payload["error"]
@@ -279,8 +287,12 @@ async def test_describe_table_unknown_table_returns_error(patched_pool) -> None:
 
 
 async def test_describe_table_no_dsn_returns_friendly_error(patched_pool) -> None:
-    """DSN 沒設 → friendly error(跟 execute_readonly_sql 一致)。"""
-    result = await tools.describe_table(table_name="companies")
+    """DSN 沒設 → friendly error(跟 execute_readonly_sql 一致)。
+
+    同樣顯式 patch settings,理由見 `test_no_dsn_returns_friendly_error`。
+    """
+    with patch.object(settings, "mcp_readonly_db_dsn", ""):
+        result = await tools.describe_table(table_name="companies")
     payload = json.loads(result)
     assert "error" in payload
     assert "MCP_READONLY_DB_DSN" in payload["error"]
