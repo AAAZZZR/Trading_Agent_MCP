@@ -83,6 +83,26 @@ The three surfaces — **52 tools**, **5 prompts**, **3 resources** — are deta
 
 ## Quick start — hosted
 
+### OAuth sign-in (recommended)
+
+```sh
+claude mcp add --transport http stockfacts https://mcp.livermore.club/mcp
+```
+
+1. Run the command above.
+2. A browser window opens for Google sign-in — approve the authorization. If no browser
+   opens, run `/mcp` inside Claude Code and pick this server to trigger it.
+3. Done. The access token lasts 1 hour and the refresh token 30 days, and the client renews
+   both on its own, so **you never copy or paste a key**.
+
+> **Requires OAuth to be enabled on the server** (admin configuration). If it is not enabled,
+> `claude mcp add` returns 401 — use the API key method below instead.
+
+### API key
+
+For scripts, CI, non-interactive environments, and any time the server does not have OAuth
+enabled.
+
 1. Create an API key on the [Stockfacts website](https://livermore.club).
 2. Point your MCP client at the hosted endpoint with the key as a Bearer token.
 
@@ -474,6 +494,25 @@ Form 4、FINRA、市場行情)先被解析、正規化成穩定結構,再以唯�
 > 再散布權利。
 
 ## 快速開始 —— 使用托管服務
+
+### OAuth 登入(建議)
+
+```sh
+claude mcp add --transport http stockfacts https://mcp.livermore.club/mcp
+```
+
+1. 執行上面這行指令。
+2. 瀏覽器會自動跳出 Google 登入 —— 同意授權即可。沒跳出的話,在 Claude Code 裡打 `/mcp`
+   選這個 server 觸發。
+3. 完成。access token 效期 1 小時、refresh token 30 天,client 會自動續期,**全程不需要
+   複製貼上任何金鑰**。
+
+> **需 server 端已啟用 OAuth**(管理員設定)。未啟用時 `claude mcp add` 會回 401,請改用
+> 下方的 API key 方式。
+
+### API key
+
+用於腳本、CI、非互動環境,或 server 尚未啟用 OAuth 時。
 
 1. 在 [Stockfacts 網站](https://livermore.club)建立一把 API key。
 2. 把你的 MCP client 指向托管接口,key 當 Bearer token 帶上。
