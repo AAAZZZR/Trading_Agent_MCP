@@ -134,12 +134,18 @@ you also need that API and its Postgres database — see [Trading_Agent](https:/
 
 | Mode | Enabled when | Behaviour |
 |---|---|---|
+| **OAuth (Google)** | `MCP_GOOGLE_CLIENT_ID` + `MCP_GOOGLE_CLIENT_SECRET` + `MCP_PUBLIC_BASE_URL` + `MCP_SAAS_DATABASE_URL` all set | Standard MCP OAuth 2.1 with Google as the upstream identity provider. The client discovers the authorization server from the well-known metadata, registers itself (CIMD or DCR), opens a browser for Google sign-in, and receives access + refresh tokens that it renews on its own. **No API key is ever copied by hand.** The Google identity is mapped to a `users` row (created on first sign-in, or bound to an existing password account with the same verified email); scopes reflect the user's tier exactly as in per-user mode. `idb_`-prefixed API keys still work in this mode — they are routed to the per-user verifier below, so both paths coexist. |
 | **Per-user (SaaS)** | `MCP_PER_USER_AUTH=true` **and** `MCP_SAAS_DATABASE_URL` set | Each user sends their own API key, validated directly against the SaaS control-plane database (`MCP_SAAS_DATABASE_URL`), with a short positive cache; metering is fire-and-forget per tool call. Scopes reflect the user's tier. |
 | **Shared token** | per-user off + `MCP_BEARER_TOKEN` set | A single shared bearer (scope `tier:pro`, full access). Backwards-compatible. |
 | **No auth** | `MCP_PER_USER_AUTH=false` and no shared token | No verifier — for local stdio development. |
 | **Misconfigured** | per-user on, but neither `MCP_SAAS_DATABASE_URL` nor `MCP_BEARER_TOKEN` set | Every request is rejected with 401 and a startup error names the missing variable. Deliberately **not** a fall-through to "no auth": a public server must never open up because one env var is missing. |
 
-- The server does **not** advertise OAuth metadata, so a 401 surfaces as a plain auth failure rather than kicking the client into an OAuth flow.
+Modes are tried top to bottom. If the OAuth variables are incomplete the server falls through to the next mode instead of failing to start.
+
+- **User flow with OAuth:** `claude mcp add stockfacts https://.../mcp` → the client follows the 401's `resource_metadata` to `/.well-known/oauth-authorization-server` → a browser opens → sign in with Google → done. Access tokens last 1 hour and refresh tokens 30 days, both renewed by the client without user action; a new machine or a new session just repeats the browser step.
+- **Google OAuth app setup (self-host):** create a *Web application* OAuth client and add `<MCP_PUBLIC_BASE_URL>/auth/callback` to its Authorized redirect URIs. No extra signing or encryption secret is needed — the JWT signing key and the OAuth-state encryption key are both derived deterministically from the client secret, so they stay stable across pods and redeploys (rotating the client secret invalidates existing OAuth sessions, which users fix by authorizing once more).
+- **OAuth state lives in Postgres** (table `mcp_oauth_state`, created automatically) and is encrypted at rest, because it holds users' upstream Google tokens. The framework default is an on-disk file store, which would be wiped every time a container is replaced.
+- Without OAuth configured, the server does **not** advertise OAuth metadata, so a 401 surfaces as a plain auth failure rather than kicking the client into an OAuth flow.
 - **Tier gating:** only `execute_readonly_sql` and `describe_table` require `tier:pro`. On a `tier:free` key they don't appear in `tools/list` and are blocked if called directly. The other 50 tools are available to free and pro.
 - **Caching:** a verified key is cached in-process for `MCP_AUTH_CACHE_TTL` (5 min) and does not touch the database during that window — the trade-off is that a revoked key stays usable for at most that long. If the database is briefly unreachable, a previously verified key keeps working for up to `MCP_AUTH_STALE_TTL` (60 min); with no cache entry the request is rejected.
 - **Quota is not a broken key:** running out of free-tier calls still authenticates — the connection stays up and only `tools/call` is refused, with a message saying the key is still valid.
@@ -376,9 +382,12 @@ If `MCP_READONLY_DB_DSN` is empty the two SQL tools are disabled (they return a 
 |---|---|---|---|
 | `MCP_API_BASE_URL` | ✅ | — | Stockfacts REST API base URL (no trailing slash). |
 | `MCP_API_AUTH_TOKEN` | ✅ | — | Service bearer: MCP server → REST API. |
+| `MCP_PUBLIC_BASE_URL` | — | `""` | Publicly reachable base URL, no trailing slash. The OAuth issuer, metadata URLs and the Google redirect URI (`<this>/auth/callback`) are all derived from it. Empty disables OAuth. |
+| `MCP_GOOGLE_CLIENT_ID` | — | `""` | Google OAuth 2.0 *Web application* client ID. |
+| `MCP_GOOGLE_CLIENT_SECRET` | — | `""` | Google OAuth client secret. Also the source material for the JWT signing key and the OAuth-state encryption key, so no separate secrets are needed. |
 | `MCP_BEARER_TOKEN` | — | `""` | Shared client bearer (shared-token mode only). |
 | `MCP_PER_USER_AUTH` | — | `true` | `true` = per-user SaaS auth; `false` = shared token. |
-| `MCP_SAAS_DATABASE_URL` | — | `""` | SaaS control-plane Postgres DSN (`api_keys` / `subscriptions` / `usage_events`). Needs read **and** write, so it is not the read-only role below. Empty disables per-user auth. |
+| `MCP_SAAS_DATABASE_URL` | — | `""` | SaaS control-plane Postgres DSN (`api_keys` / `subscriptions` / `usage_events` / `users`, plus the auto-created `mcp_oauth_state`). Needs read **and** write, so it is not the read-only role below. Empty disables both OAuth and per-user auth. |
 | `MCP_AUTH_CACHE_TTL` | — | `300` | Positive auth cache TTL (seconds); a revoked key stays usable for at most this long. |
 | `MCP_AUTH_STALE_TTL` | — | `3600` | How long a cached key keeps working while the database is unreachable (seconds). |
 | `MCP_QUOTA_CACHE_TTL` | — | `60` | Quota-state cache TTL (seconds). |
@@ -516,12 +525,18 @@ API 與它的 Postgres——見 [Trading_Agent](https://github.com/AAAZZZR/Tradi
 
 | 模式 | 啟用條件 | 行為 |
 |---|---|---|
+| **OAuth(Google)** | `MCP_GOOGLE_CLIENT_ID` + `MCP_GOOGLE_CLIENT_SECRET` + `MCP_PUBLIC_BASE_URL` + `MCP_SAAS_DATABASE_URL` 四者齊全 | 標準 MCP OAuth 2.1,上游身分供應者是 Google。client 從 well-known metadata 自己發現授權伺服器、自己註冊(CIMD 或 DCR)、彈瀏覽器讓使用者用 Google 登入,拿到 access + refresh token 後自動續期。**全程不必手動複製貼上任何 API key。** Google 身分會對應到 `users` 一列(第一次登入時建立;若已有同一個已驗證 email 的密碼帳號則綁定它),scope 一樣反映 tier。此模式下 `idb_` 開頭的 API key 仍然可用——會被轉交給下面的 per-user verifier,兩條路並存。 |
 | **Per-user(SaaS)** | `MCP_PER_USER_AUTH=true` **且** `MCP_SAAS_DATABASE_URL` 有值 | 每個 user 帶自己的 API key,直接對 SaaS 控制面 DB(`MCP_SAAS_DATABASE_URL`)驗證,帶短時間的正向快取;計量改成每次 tool 呼叫非同步寫入。scope 反映 user 的 tier。 |
 | **共用 token** | per-user 關 + `MCP_BEARER_TOKEN` 非空 | 單一共用 bearer(scope `tier:pro`,完整權限)。向後相容。 |
 | **無 auth** | `MCP_PER_USER_AUTH=false` 且無共用 token | 不啟用 verifier——本機 stdio 開發用。 |
 | **設定失誤** | per-user 開著,但 `MCP_SAAS_DATABASE_URL` 與 `MCP_BEARER_TOKEN` 都沒設 | 一律回 401,啟動時會 log 出缺哪個變數。刻意**不**掉回「不啟用 auth」——對外的 server 絕不能因為少設一個環境變數就敞開。 |
 
-- Server **不**公告 OAuth metadata,所以 401 會直接顯示認證失敗,不會誤把 client 帶進 OAuth 流程。
+模式由上往下擇一。OAuth 的變數沒設齊時會落到下一個模式,而不是讓 server 起不來。
+
+- **OAuth 的使用者流程:** `claude mcp add stockfacts https://.../mcp` → client 依 401 的 `resource_metadata` 找到 `/.well-known/oauth-authorization-server` → 彈出瀏覽器 → 用 Google 登入 → 完成。access token 效期 1 小時、refresh token 30 天,都由 client 自動續,使用者不必再操作;換一台電腦或換一個 session 只要再走一次瀏覽器那步。
+- **自建時的 Google OAuth app 設定:** 建一個 *Web application* 類型的 OAuth client,並把 `<MCP_PUBLIC_BASE_URL>/auth/callback` 加進 Authorized redirect URIs。不需要額外的簽章 / 加密金鑰變數——FastMCP JWT 的 signing key 與 OAuth 狀態儲存的加密金鑰都從 client secret 決定性推導,跨 pod、跨 redeploy 自動一致(輪替 client secret 會讓既有 OAuth session 失效,使用者重新授權一次即可)。
+- **OAuth 狀態存在 Postgres**(表 `mcp_oauth_state`,自動建立)並加密,因為裡面有使用者的上游 Google token。框架預設是本機檔案儲存,容器一換就整包蒸發。
+- 沒設定 OAuth 時,server **不**公告 OAuth metadata,401 會直接顯示認證失敗,不會誤把 client 帶進 OAuth 流程。
 - **Tier gating:** 只有 `execute_readonly_sql` 與 `describe_table` 需要 `tier:pro`。`tier:free` 的 key 在 `tools/list` 看不到這兩個、直接呼叫也被擋。其餘 50 個 free/pro 皆可用。
 - **快取:** 驗過的 key 會在 process 內快取 `MCP_AUTH_CACHE_TTL`(5 分鐘),期間完全不碰 DB——取捨是撤銷最多延遲這麼久才生效。DB 短暫不可用時,之前驗過的 key 還能續用到 `MCP_AUTH_STALE_TTL`(60 分鐘);沒快取則直接拒絕。
 - **超額不等於壞 key:** 免費額度用完仍然認證成功——連線不斷,只有 `tools/call` 被擋下,並告知使用者 key 還是有效的。

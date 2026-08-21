@@ -51,6 +51,32 @@ class Settings(BaseSettings):
     # 額度是商業限制不是安全邊界,60 秒的誤差可接受,換掉每個請求一次 count(*)。
     mcp_quota_cache_ttl: float = 60.0
 
+    # ------------------------------------------------------------------
+    # OAuth 2.1(Google 上游)—— 主線認證路徑
+    #
+    # 這三個 + `mcp_saas_database_url` 四者**齊全**才啟用 OAuth;缺任何一個就
+    # 靜靜退回 bearer API key 模式(見 server.py `_build_auth()`),**不 crash** ——
+    # 少設一個環境變數就讓整台 server 起不來,是比「少一個功能」糟得多的失敗模式。
+    #
+    # 刻意只有三個變數:
+    #   - 簽 FastMCP JWT 的 signing key 由 client secret **決定性推導**
+    #     (fastmcp `OAuthProxy`:derive_jwt_key(salt="fastmcp-jwt-signing-key")),
+    #     跨 pod / 跨 redeploy 自動一致,不需要也不該再多一個 env。
+    #   - OAuth 狀態儲存的加密金鑰同理,由 client secret 推導(見 oauth.py)。
+    # 也就是說:輪替 Google client secret 會讓既有的 OAuth session 全部失效
+    # (使用者重新授權一次即可),這是刻意的取捨 —— 換來零額外密鑰管理。
+    # ------------------------------------------------------------------
+
+    # 對外可達的 base URL(無尾斜線),例如 https://trading-agent-mcp.zeabur.app。
+    # OAuth 的 issuer、metadata 位址與 Google redirect URI 全部由它推導;
+    # redirect URI = <這個值>/auth/callback,必須逐字加進 GCP OAuth client 的
+    # 「Authorized redirect URIs」,否則 Google 會拒絕整個授權流程。
+    mcp_public_base_url: str = ""
+
+    # GCP OAuth 2.0 Client(類型 Web application)的 client id / secret。
+    mcp_google_client_id: str = ""
+    mcp_google_client_secret: str = ""
+
     # Streamable HTTP transport port(Zeabur 會以 $PORT 蓋過)
     port: int = 8000
 

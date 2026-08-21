@@ -17,6 +17,7 @@ HTTP transport 的實際攔截(401 / 200)由 FastMCP 框架負責,框架自己�
 
 import hashlib
 import json
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, replace
 from unittest.mock import AsyncMock, patch
 
@@ -36,7 +37,8 @@ from trading_agent_mcp.auth import (
     _CachedQuota,
     _scopes_for_tier,
 )
-from trading_agent_mcp.server import _build_auth, mcp
+from trading_agent_mcp.oauth import StockfactsGoogleProvider
+from trading_agent_mcp.server import _build_auth, _should_rewrite_401, mcp
 from trading_agent_mcp.settings import Settings
 
 _SAAS_DSN = "postgresql://saas:pw@test-db:5432/zeabur"
@@ -74,14 +76,94 @@ def _patch_saas(monkeypatch, *, lookup: AsyncMock, count: AsyncMock | None = Non
     return lookup, count
 
 
+@contextmanager
+def _settings(**overrides):
+    """patch `server.settings`,並把 OAuth 那四個設定預設關掉。
+
+    ⚠️ MagicMock 的任何屬性都是真值,所以不明確清空的話,每一個 `_build_auth()`
+    測試都會誤入 OAuth 分支(那是優先序最高的一條)。要測 OAuth 就用 overrides
+    把四個值一起傳進來。
+    """
+    with patch("trading_agent_mcp.server.settings") as s:
+        s.mcp_google_client_id = ""
+        s.mcp_google_client_secret = ""
+        s.mcp_public_base_url = ""
+        s.mcp_saas_database_url = ""
+        for name, value in overrides.items():
+            setattr(s, name, value)
+        yield s
+
+
 # ============================================================
 # _build_auth():分支選擇邏輯
 # ============================================================
 
 
+_OAUTH_SETTINGS = {
+    "mcp_google_client_id": "test-client-id",
+    "mcp_google_client_secret": "test-client-secret",
+    "mcp_public_base_url": "https://mcp.example.com",
+    "mcp_saas_database_url": _SAAS_DSN,
+    "mcp_auth_cache_ttl": 300.0,
+    "mcp_auth_stale_ttl": 3600.0,
+    "mcp_quota_cache_ttl": 60.0,
+}
+
+
+def test_oauth_wins_when_fully_configured() -> None:
+    """OAuth 是主線 —— 四個設定齊全時它排最前面,連 per-user bearer 都排在後面。"""
+    with _settings(**_OAUTH_SETTINGS) as s:
+        s.mcp_per_user_auth = True
+        s.mcp_bearer_token = "test-secret"
+        auth = _build_auth()
+    assert isinstance(auth, StockfactsGoogleProvider)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "mcp_google_client_id",
+        "mcp_google_client_secret",
+        "mcp_public_base_url",
+        "mcp_saas_database_url",
+    ],
+)
+def test_oauth_settings_incomplete_falls_through(missing) -> None:
+    """OAuth 設定缺任一個 → 靜靜落到下一條(這裡是共用 token),**不 crash**。"""
+    overrides = dict(_OAUTH_SETTINGS, **{missing: ""})
+    with _settings(**overrides) as s:
+        s.mcp_per_user_auth = False
+        s.mcp_bearer_token = "test-secret"
+        auth = _build_auth()
+    assert isinstance(auth, StaticTokenVerifier)
+
+
+def test_oauth_mode_does_not_rewrite_401_description() -> None:
+    """OAuth 模式:401 是「請去認證」的正常訊號 —— 文案原樣放行,不改寫。
+
+    改寫掉會讓 client 收到一句我們自己寫的「不要重連」,而那正好跟它該做的事
+    (去重新拿 token)相反。
+    """
+    with _settings(**_OAUTH_SETTINGS) as s:
+        s.mcp_per_user_auth = True
+        s.mcp_bearer_token = ""
+        auth = _build_auth()
+    assert _should_rewrite_401(auth) is False
+
+
+def test_bearer_mode_still_rewrites_401_description() -> None:
+    """bearer-only / 無 auth 模式維持現行(已上線)的改寫行為。"""
+    with _settings() as s:
+        s.mcp_per_user_auth = False
+        s.mcp_bearer_token = "test-secret"
+        auth = _build_auth()
+    assert _should_rewrite_401(auth) is True
+    assert _should_rewrite_401(None) is True
+
+
 def test_no_token_returns_none() -> None:
     """per-user 關 + mcp_bearer_token 為空 → 不啟 auth(本機 stdio 開發用)。"""
-    with patch("trading_agent_mcp.server.settings") as s:
+    with _settings() as s:
         s.mcp_per_user_auth = False
         s.mcp_bearer_token = ""
         assert _build_auth() is None
@@ -89,7 +171,7 @@ def test_no_token_returns_none() -> None:
 
 def test_static_token_set_returns_static_verifier() -> None:
     """per-user 關 + 非空 token → StaticTokenVerifier(向後相容)。"""
-    with patch("trading_agent_mcp.server.settings") as s:
+    with _settings() as s:
         s.mcp_per_user_auth = False
         s.mcp_bearer_token = "test-secret"
         auth = _build_auth()
@@ -98,7 +180,7 @@ def test_static_token_set_returns_static_verifier() -> None:
 
 def test_per_user_enabled_returns_per_user_verifier() -> None:
     """per-user 開 + SaaS DSN 有值 → PerUserTokenVerifier。"""
-    with patch("trading_agent_mcp.server.settings") as s:
+    with _settings() as s:
         s.mcp_per_user_auth = True
         s.mcp_saas_database_url = _SAAS_DSN
         s.mcp_auth_cache_ttl = 300.0
@@ -110,7 +192,7 @@ def test_per_user_enabled_returns_per_user_verifier() -> None:
 
 def test_per_user_without_saas_dsn_falls_back_to_static() -> None:
     """per-user 開但 SaaS DSN 為空 → 退回 StaticTokenVerifier(沒 DSN 驗不了 key)。"""
-    with patch("trading_agent_mcp.server.settings") as s:
+    with _settings() as s:
         s.mcp_per_user_auth = True
         s.mcp_saas_database_url = ""
         s.mcp_bearer_token = "test-secret"
@@ -124,7 +206,7 @@ async def test_per_user_without_dsn_or_token_rejects_instead_of_opening_up() -> 
     這條是安全防線:mcp_per_user_auth 預設為 True,少設一個 MCP_SAAS_DATABASE_URL
     就把整台對外 server 敞開,是最糟的失敗模式。
     """
-    with patch("trading_agent_mcp.server.settings") as s:
+    with _settings() as s:
         s.mcp_per_user_auth = True
         s.mcp_saas_database_url = ""
         s.mcp_bearer_token = ""
@@ -137,7 +219,7 @@ async def test_per_user_without_dsn_or_token_rejects_instead_of_opening_up() -> 
 
 def test_build_auth_passes_settings_ttls() -> None:
     """三個 TTL 由 settings 帶進 verifier(不是寫死)。"""
-    with patch("trading_agent_mcp.server.settings") as s:
+    with _settings() as s:
         s.mcp_per_user_auth = True
         s.mcp_saas_database_url = _SAAS_DSN
         s.mcp_auth_cache_ttl = 111.0
@@ -164,7 +246,7 @@ def test_default_ttls() -> None:
 
 
 async def test_static_verifier_accepts_correct_token() -> None:
-    with patch("trading_agent_mcp.server.settings") as s:
+    with _settings() as s:
         s.mcp_per_user_auth = False
         s.mcp_bearer_token = "test-secret"
         auth = _build_auth()
@@ -175,7 +257,7 @@ async def test_static_verifier_accepts_correct_token() -> None:
 
 
 async def test_static_verifier_rejects_wrong_token() -> None:
-    with patch("trading_agent_mcp.server.settings") as s:
+    with _settings() as s:
         s.mcp_per_user_auth = False
         s.mcp_bearer_token = "test-secret"
         auth = _build_auth()
@@ -546,13 +628,21 @@ def test_cached_quota_is_frozen() -> None:
 # ============================================================
 
 
-def _framework_401_app(status: int = 401):
+# RFC 9728 的 discovery 線索 —— 真實的 401 會帶它(FastMCP RequireAuthMiddleware
+# 在有 resource_metadata_url 時一定附上)。MCP client 靠它找授權伺服器。
+_RESOURCE_METADATA_URL = "https://mcp.example.com/.well-known/oauth-protected-resource/mcp"
+
+
+def _framework_401_app(status: int = 401, *, resource_metadata: bool = False):
     """模擬 FastMCP RequireAuthMiddleware 送出的錯誤回應(含那句誤導文案)。"""
     description = (
         "Authentication failed. Please clear authentication tokens in your MCP "
         "client and reconnect."
     )
     body = json.dumps({"error": "invalid_token", "error_description": description}).encode()
+    www = f'Bearer error_description="{description}"'
+    if resource_metadata:
+        www += f', resource_metadata="{_RESOURCE_METADATA_URL}"'
 
     async def app(scope, receive, send) -> None:
         await send(
@@ -562,7 +652,7 @@ def _framework_401_app(status: int = 401):
                 "headers": [
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(body)).encode()),
-                    (b"www-authenticate", f'Bearer error_description="{description}"'.encode()),
+                    (b"www-authenticate", www.encode()),
                 ],
             }
         )
@@ -571,7 +661,7 @@ def _framework_401_app(status: int = 401):
     return app
 
 
-async def _drive(app, scope: dict | None = None) -> list[dict]:
+async def _drive(app, scope: dict | None = None, **middleware_kwargs) -> list[dict]:
     """跑一次 middleware,收集它送出的 ASGI 訊息。"""
     sent: list[dict] = []
 
@@ -581,7 +671,8 @@ async def _drive(app, scope: dict | None = None) -> list[dict]:
     async def receive() -> dict:
         return {"type": "http.request"}
 
-    await AuthErrorMessageMiddleware(app)(scope or {"type": "http"}, receive, send)
+    middleware = AuthErrorMessageMiddleware(app, **middleware_kwargs)
+    await middleware(scope or {"type": "http"}, receive, send)
     return sent
 
 
@@ -665,6 +756,41 @@ async def test_middleware_ignores_non_http_scope() -> None:
 
     await _drive(app, scope={"type": "lifespan"})
     assert seen == [{"type": "lifespan"}]
+
+
+async def test_middleware_preserves_resource_metadata() -> None:
+    """改寫文案時 `resource_metadata="..."` 必須原樣接回去。
+
+    這是 MCP client 發現授權伺服器的**唯一**線索。弄丟它 = client 收到 401 卻
+    不知道去哪認證,瀏覽器永遠不會彈出來,而且完全沒有錯誤訊息可查。
+    """
+    sent = await _drive(_framework_401_app(resource_metadata=True))
+
+    start, body = sent
+    www = _headers(start)[b"www-authenticate"][0].decode()
+
+    assert f'resource_metadata="{_RESOURCE_METADATA_URL}"' in www
+    # 文案還是我們的(bearer 模式的既有行為不變)。
+    assert AUTH_ERROR_DESCRIPTION in www
+    assert _FRAMEWORK_ADVICE not in www
+    assert json.loads(body["body"])["error_description"] == AUTH_ERROR_DESCRIPTION
+
+
+async def test_middleware_passthrough_when_rewrite_disabled() -> None:
+    """`rewrite_description=False`(OAuth 模式)→ body / header 一個 byte 都不動。"""
+    app = _framework_401_app(resource_metadata=True)
+    original = await _drive(app, rewrite_description=True)  # 只為了拿到「有被改過」的對照
+    sent = await _drive(app, rewrite_description=False)
+
+    start, body = sent
+    assert start["status"] == 401
+    www = _headers(start)[b"www-authenticate"][0].decode()
+
+    assert _FRAMEWORK_ADVICE in www
+    assert f'resource_metadata="{_RESOURCE_METADATA_URL}"' in www
+    assert _FRAMEWORK_ADVICE in body["body"].decode()
+    # 對照組確實被改過 —— 證明差別來自旗標,不是這個假 app 本來就沒東西可改。
+    assert AUTH_ERROR_DESCRIPTION in _headers(original[0])[b"www-authenticate"][0].decode()
 
 
 # ============================================================

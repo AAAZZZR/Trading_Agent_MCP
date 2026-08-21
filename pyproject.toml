@@ -10,6 +10,10 @@ dependencies = [
     "asyncpg>=0.30.0",
     "fastmcp>=3.4.7",
     "httpx>=0.28.1",
+    # OAuth 狀態儲存(PostgreSQLStore + FernetEncryptionWrapper,見 oauth.py)。
+    # fastmcp 本來就會帶進來,但我們直接 import 它 —— 明確宣告,免得哪天 fastmcp
+    # 換掉儲存層就無聲炸掉。postgresql extra 只是把 asyncpg 拉進來(我們已經有)。
+    "py-key-value-aio[postgresql]>=0.4.4",
     "pydantic-settings>=2.14.1",
     "sqlparse>=0.5.0",
 ]

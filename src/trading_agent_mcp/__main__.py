@@ -12,7 +12,7 @@ import sys
 from starlette.middleware import Middleware
 
 from trading_agent_mcp.auth import AuthErrorMessageMiddleware
-from trading_agent_mcp.server import mcp
+from trading_agent_mcp.server import mcp, rewrite_401_description
 from trading_agent_mcp.settings import settings
 
 
@@ -35,12 +35,16 @@ def main() -> None:
     # 的 RequireAuthMiddleware「外面」(server_middleware 在 route 之外),所以攔得到
     # 框架寫死的 401 —— 用來把「clear authentication tokens in your MCP client and
     # reconnect」換成不會誤導使用者刪掉好好的 key 的說法(見 auth.py)。
+    # OAuth 模式下 `rewrite_401_description` 為 False,整層變成純放行:那時候 401
+    # 是「請去認證」的正常訊號,而且 client 要靠它的 resource_metadata 找授權伺服器。
     mcp.run(
         transport="streamable-http",
         host="0.0.0.0",
         port=settings.port,
         stateless_http=True,
-        middleware=[Middleware(AuthErrorMessageMiddleware)],
+        middleware=[
+            Middleware(AuthErrorMessageMiddleware, rewrite_description=rewrite_401_description)
+        ],
     )
 
 
