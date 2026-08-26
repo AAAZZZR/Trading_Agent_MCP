@@ -17,6 +17,7 @@ import pytest
 from fastmcp.server.auth.oauth_proxy import consent as fastmcp_consent
 from fastmcp.server.auth.oauth_proxy import ui as fastmcp_ui
 
+from trading_agent_mcp import consent_page
 from trading_agent_mcp.consent_page import (
     _FORM_FIELDS,
     _TAGLINE,
@@ -218,3 +219,70 @@ def test_we_accept_everything_the_framework_passes() -> None:
 
     html = render_consent_page(**kwargs)
     assert "<title>" in html
+
+# ============================================================
+# 對比:同意頁的每個文字顏色都要過 WCAG AA
+# ============================================================
+
+
+def _relative_luminance(hex_color: str) -> float:
+    """WCAG 2.x 的相對亮度。"""
+    raw = hex_color.lstrip("#")
+    channels = []
+    for offset in (0, 2, 4):
+        value = int(raw[offset : offset + 2], 16) / 255
+        channels.append(
+            value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+        )
+    red, green, blue = channels
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def _contrast(foreground: str, background: str) -> float:
+    a, b = _relative_luminance(foreground), _relative_luminance(background)
+    lighter, darker = max(a, b), min(a, b)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def test_contrast_helper_matches_known_values() -> None:
+    """先確認這把尺是準的 —— 否則下面每條斷言都只是在自我安慰。
+
+    黑白對比是 21:1,同色是 1:1,這兩個是 WCAG 公式的固定端點。
+    """
+    assert round(_contrast("#000000", "#FFFFFF"), 1) == 21.0
+    assert round(_contrast("#777777", "#777777"), 1) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("name", "fg", "bg"),
+    [
+        # 卡片內的文字(底色 = _SURFACE)
+        ("正文 lede", consent_page._MUTED, consent_page._SURFACE),
+        ("強調字", consent_page._BONE, consent_page._SURFACE),
+        ("scope 條目", consent_page._MUTED, consent_page._SURFACE),
+        ("Details 標籤", consent_page._DIM, consent_page._SURFACE),
+        ("Details 值", consent_page._MUTED, consent_page._SURFACE),
+        ("callback 位址", consent_page._BONE, consent_page._SURFACE),
+        ("callback 標籤", consent_page._GOLD, consent_page._SURFACE),
+        # 卡片外(底色 = _INK)
+        ("字標", consent_page._BONE, consent_page._INK),
+        ("slogan", consent_page._DIM, consent_page._INK),
+        ("底部說明", consent_page._DIM, consent_page._INK),
+        # 按鈕:色塊底 + 深色字
+        ("主按鈕", consent_page._INK, consent_page._GOLD),
+        ("主按鈕 hover", consent_page._INK, consent_page._GOLD_DEEP),
+        ("次按鈕", consent_page._MUTED, consent_page._SURFACE),
+    ],
+)
+def test_every_text_colour_passes_wcag_aa(name, fg, bg) -> None:
+    """AA 是 4.5:1。這一頁是安全決定的頁面,看不清楚的字等於沒寫。
+
+    ⚠️ 特別看 hover:金色底配骨白字只有 2.90:1,曾經是這裡的 bug。
+    """
+    ratio = _contrast(fg, bg)
+    assert ratio >= 4.5, f"{name}: {fg} on {bg} 只有 {ratio:.2f}:1,低於 AA 4.5"
+
+
+def test_card_border_is_actually_visible() -> None:
+    """卡片底與頁底只差 1.21:1 —— 邊界完全靠這條邊框,它不能也是隱形的。"""
+    assert _contrast(consent_page._LINE, consent_page._SURFACE) >= 1.5

@@ -53,10 +53,14 @@ _FORM_FIELDS = ("txn_id", "csrf_token", "action")
 # 的硬邊感,不是 SaaS 的圓潤感。
 _INK = "#0F131A"
 _SURFACE = "#1E2532"
-_LINE = "#2A3242"
+# 卡片邊框。#2A3242 對卡片底只有 1.20:1,等於沒有邊 —— 這張卡的邊界完全靠它。
+_LINE = "#45536D"
 _BONE = "#E9E5DB"
 _MUTED = "#8A93A5"
-_DIM = "#5E6779"
+# ⚠️ 這個值是從 landing 草稿的 `--dim` 校正過的。原本的 #5E6779 在卡片底
+# (#1E2532)上只有 2.70:1、在頁底上 3.27:1,兩個都低於 AA 4.5 —— 而它是
+# `.detail-label` 與底部說明文字的顏色,不是裝飾。#828C9E 對兩種底都 >= 4.5。
+_DIM = "#828C9E"
 _GOLD = "#D9A94A"
 _GOLD_DEEP = "#A97F2C"
 
@@ -233,7 +237,8 @@ _STYLES = f"""
         border: 1px solid transparent;
     }}
     .approve {{ background: {_GOLD}; color: {_INK}; border-color: {_GOLD}; }}
-    .approve:hover {{ background: {_GOLD_DEEP}; border-color: {_GOLD_DEEP}; color: {_BONE}; }}
+    /* hover 保持深色字:骨白配 gold-deep 只有 2.90:1,是 AA 之下的。 */
+    .approve:hover {{ background: {_GOLD_DEEP}; border-color: {_GOLD_DEEP}; color: {_INK}; }}
     .deny {{ background: transparent; color: {_MUTED}; border-color: {_LINE}; }}
     .deny:hover {{ color: {_BONE}; border-color: {_DIM}; }}
     .why {{
