@@ -14,6 +14,7 @@
      usage_events 的外鍵認的是前者。
 """
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -56,6 +57,46 @@ def _build(**overrides) -> StockfactsGoogleProvider:
 def provider() -> StockfactsGoogleProvider:
     """每個測試一個獨立 provider(獨立的身分 / 額度快取)。"""
     return _build()
+
+
+async def _fetch_as_metadata(provider: StockfactsGoogleProvider) -> dict:
+    """實際打一次 AS metadata 路由,回它吐給 client 的那份 JSON。
+
+    刻意走路由而不是讀 provider 的內部欄位:client 選哪條註冊路徑看的是這份
+    公告,測公告才測得到真正會害人的東西。
+    """
+    route = next(
+        r
+        for r in provider.get_routes("/mcp")
+        if r.path == "/.well-known/oauth-authorization-server"
+    )
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "GET",
+        "path": route.path,
+        "root_path": "",
+        "scheme": "https",
+        "query_string": b"",
+        "headers": [],
+        "client": ("testclient", 1234),
+        "server": ("mcp.example.com", 443),
+    }
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    chunks: list[bytes] = []
+
+    async def send(message: dict) -> None:
+        if message["type"] == "http.response.body":
+            chunks.append(message.get("body", b""))
+
+    # 走 `Route.handle` 而不是直接呼叫 endpoint —— 這條路由開 / 關 CIMD 時
+    # 是兩種不同的東西(自訂 handler vs 包在 CORSMiddleware 裡的 ASGI app),
+    # 只有 ASGI 這層介面兩種都吃得下。
+    await route.handle(scope, receive, send)
+    return json.loads(b"".join(chunks))
 
 
 def _google_token(**claim_overrides) -> AccessToken:
@@ -391,6 +432,26 @@ def test_oauth_routes_are_published(provider) -> None:
     assert "/auth/callback" in paths
 
 
-def test_cimd_stays_enabled(provider) -> None:
-    """CIMD 是 Claude Code / Desktop 在使用者發起路徑上用的那條,不能關。"""
-    assert provider._cimd_manager is not None
+def test_cimd_stays_disabled(provider) -> None:
+    """CIMD 必須是關的 —— 開著會公告一個這台履行不了的能力,把登入堵死。
+
+    這台的出口 IP 被 Cloudflare 擋(抓 Claude Code 的 metadata 文件固定 403),
+    所以 CIMD 註冊必定失敗。而 fastmcp 只要 CIMD 開著就會在 AS metadata 放
+    `client_id_metadata_document_supported: true`,Claude Code 讀到就優先走 CIMD、
+    跳過 DCR,然後卡在 /authorize 的「Client Not Registered」且不會自己退回。
+    理由完整版見 `build_oauth_provider` 裡 `enable_cimd=False` 的註解。
+    """
+    assert provider._cimd_manager is None
+
+
+async def test_cimd_is_not_advertised_in_metadata(provider) -> None:
+    """AS metadata **不可以**出現 CIMD 那面旗子 —— 它就是 client 選路的依據。
+
+    直接驗對外公告的那份 JSON,而不是只驗內部旗標:會害人的是公告本身,
+    哪天 fastmcp 換了實作、旗標名字變了,也要在這裡就爆而不是等使用者登不進來。
+    """
+    payload = await _fetch_as_metadata(provider)
+
+    assert payload.get("client_id_metadata_document_supported") is None
+    # DCR 那條反過來一定要在:關掉 CIMD 之後它是唯一的註冊路徑。
+    assert payload["registration_endpoint"].endswith("/register")

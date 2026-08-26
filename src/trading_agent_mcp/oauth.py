@@ -7,7 +7,7 @@ bearer API key 那條路(`auth.py`)已經很穩,但它有個沒辦法用「更�
 key 打錯了看到的是 401。標準 MCP OAuth 把這一整段拿掉:
 
     claude mcp add → client 讀 /.well-known/... 發現授權伺服器
-                   → 自己註冊(CIMD / DCR)→ 彈瀏覽器 → 使用者用 Google 登入
+                   → 自己註冊(DCR /register)→ 彈瀏覽器 → 使用者用 Google 登入
                    → client 自動拿到 access + refresh token → 過期自動續
 
 使用者從頭到尾沒看過任何一串憑證。這是主線;bearer key 路徑**保留並存**,
@@ -381,8 +381,25 @@ def build_oauth_provider(
         # `require_authorization_consent` 用預設 True:第一次授權會顯示同意頁。
         # 關掉等於任何註冊過的 client 都能靜默拿到使用者資料,不做。
         #
-        # `enable_cimd` 用預設 True,DCR 的 /register 由 OAuthProxy 一律提供。
-        # 兩條都留著:Claude Code / Desktop 在使用者發起的路徑上用 CIMD,而
-        # MCP 2026-07-28 spec 雖然把 DCR 標為 deprecated,仍保留至少 12 個月
-        # 向後相容 —— 舊 client 只認得 DCR,關掉任何一條都會擋掉一群人。
+        # `enable_cimd=False` —— 這台刻意**關掉** CIMD,只留 DCR。
+        #
+        # CIMD 的成立前提是「授權伺服器抓得到 client 自己託管的 metadata 文件」:
+        # client_id 本身是一個 URL,我們得在 /authorize 當下把它 fetch 回來驗。
+        # 但實測從這台 pod 抓 Claude Code 的文件
+        # (https://claude.ai/oauth/claude-code-client-metadata)一律是
+        # `403` + `cf-mitigated: challenge` —— Cloudflare 對這段機房 IP 出的挑戰頁,
+        # 換 User-Agent 沒用(跟 Yahoo 擋 Tencent Cloud 整段 IP 是同一類問題)。
+        #
+        # 開著會比關掉更糟,因為這個旗標同時是**對外公告**:只要 CIMD 沒關,
+        # fastmcp 就會在 `/.well-known/oauth-authorization-server` 放
+        # `client_id_metadata_document_supported: true`。Claude Code 看到這行就
+        # 優先走 CIMD、跳過 DCR,接著在 /authorize 撞上「Client Not Registered」,
+        # 而且**不會**自己退回 DCR —— 等於我們宣告了一個自己履行不了的能力,
+        # 把主線登入整條堵死。關掉旗標就不公告,client 自然回頭打 /register。
+        #
+        # DCR(`/register`)反過來不需要任何對外連線,client POST 過來就註冊得成,
+        # 在這個網路環境下是唯一可靠的一條;MCP 2026-07-28 spec 雖把它標為
+        # deprecated,仍保留至少 12 個月向後相容。哪天出口 IP 不再被 Cloudflare 擋
+        # (或架了 egress proxy),把這個參數拿掉就會自動恢復 CIMD。
+        enable_cimd=False,
     )
