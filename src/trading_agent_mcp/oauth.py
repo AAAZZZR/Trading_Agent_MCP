@@ -58,7 +58,7 @@ from fastmcp.server.auth.providers.google import GoogleProvider
 from key_value.aio.stores.postgresql import PostgreSQLStore
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
-from trading_agent_mcp import saas_db
+from trading_agent_mcp import consent_page, saas_db
 from trading_agent_mcp.auth import (
     _TRANSIENT_DB_ERRORS,
     CACHE_MAX_SIZE,
@@ -342,6 +342,11 @@ def build_oauth_provider(
     """
     if not (client_id and client_secret and public_base_url and saas_database_url):
         return None
+
+    # 換掉 fastmcp 的預設同意頁。放在這裡而不是模組載入時:只有真的啟用 OAuth 的
+    # 部署才會看到 /consent,bearer-only 或本機 stdio 沒必要動第三方模組。
+    # 失敗只是退回預設頁(見 install 的 docstring),不擋 server 起來。
+    consent_page.install()
 
     # OAuth 狀態(client 註冊 / 上游 token / 交易 / code / JTI / refresh metadata)
     # 全部落 Postgres —— pod 換掉、多 replica 都不會掉 session。auto_create=True

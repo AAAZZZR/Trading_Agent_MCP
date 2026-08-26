@@ -81,7 +81,14 @@ def _build_auth() -> AuthProvider | None:
 _auth = _build_auth()
 
 mcp = FastMCP(
-    name="investor-db",
+    # 對外的 server 身分。這個字串會出現在兩個使用者看得到的地方:MCP client 的
+    # server 清單,以及 OAuth 同意頁的標題與字標(`ConsentMixin` 直接讀 FastMCP.name)。
+    # 舊值 `investor-db` 是內部代號,不該印在使用者臉上。
+    # ⚠️ 這不影響工具名稱前綴 —— Claude Code / Desktop 用的是使用者自己在設定檔裡
+    # 取的鍵名(`mcp__<設定鍵>__<tool>`),不是這裡的值。
+    name="Livermore",
+    # 同意頁會把字標連到這裡;順帶讓 client 有個「這是誰」的去處。
+    website_url="https://livermore.club",
     instructions=(
         "美股市場資料查詢 —— 公司基本資料與搜尋、SEC filings(10-K / 10-Q / 8-K / Form 4)、"
         "財務報表(損益 / 資產負債 / 現金流)、估值快照(市值 / 本益比家族 / 均線)、"
