@@ -424,7 +424,7 @@ is served at `/mcp`.
 
 ```sh
 uv sync
-uv run pytest -q        # 189 tests
+uv run pytest -q        # 857 tests
 ```
 
 ## License
@@ -829,7 +829,7 @@ port、設好上述環境變數即可;streamable-HTTP 接口在 `/mcp`。
 
 ```sh
 uv sync
-uv run pytest -q        # 189 個測試
+uv run pytest -q        # 857 個測試
 ```
 
 ## 授權
