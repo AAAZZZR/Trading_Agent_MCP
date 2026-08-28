@@ -46,6 +46,7 @@ async def test_all_tools_registered() -> None:
         "screen_insider_buys",
         "get_analysis", "get_objective_report", "get_overview",
         "get_short_interest", "get_short_volume", "screen_high_short_interest",
+        "get_short_interest_movers", "get_dark_pool_weekly",
         "get_options_chain", "get_option_expirations", "get_option_contract_history",
         "search_institutions", "get_institution", "list_etf_sectors",
         "execute_readonly_sql", "describe_table",
@@ -447,6 +448,32 @@ _CASES = [
             "limit": "50",
         },
     ),
+    (
+        tools.get_short_interest_movers,
+        "/api/shorts/movers",
+        {},
+        {"direction": "increase", "min_position": "100000", "limit": "25"},
+    ),
+    (
+        tools.get_short_interest_movers,
+        "/api/shorts/movers",
+        {"direction": "decrease", "min_position": 250_000,
+         "market_cap_min": 1e9, "market_cap_max": 5e10, "limit": 10},
+        {"direction": "decrease", "min_position": "250000", "limit": "10",
+         "market_cap_min": "1000000000.0", "market_cap_max": "50000000000.0"},
+    ),
+    (
+        tools.get_dark_pool_weekly,
+        "/api/shorts/darkpool/WLF",
+        {"ticker": "wlf"},
+        {"weeks": "12"},
+    ),
+    (
+        tools.get_dark_pool_weekly,
+        "/api/shorts/darkpool/WLF",
+        {"ticker": "wlf", "weeks": 4},
+        {"weeks": "4"},
+    ),
 
     # Options(工具參數統一成 ticker;但 API 端 query 仍是 underlying)
     (
@@ -547,6 +574,84 @@ async def test_get_ipo_calendar_500_raises_tool_error() -> None:
         mock.get("/api/market/ipo-calendar").respond(500, text="boom")
         with pytest.raises(ToolError) as excinfo:
             await _unwrap(tools.get_ipo_calendar)()
+    assert "500" in str(excinfo.value)
+
+
+# ---- FINRA movers / darkpool(回傳原樣轉發 + error 走同一咽喉點)-------------
+
+
+async def test_get_short_interest_movers_forwards_payload() -> None:
+    """movers 是薄轉發:後端的 {items, count} 原樣回給 agent,不在 MCP 端加工。"""
+    payload = {
+        "items": [
+            {
+                "ticker": "WLF",
+                "company_name": "Wildflower Inc",
+                "settlement_date": "2026-08-14",
+                "current_short_position": 5_000_000,
+                "previous_short_position": 3_000_000,
+                "change_previous": 2_000_000,
+                "change_percent": "66.67",
+                "days_to_cover": "4.2",
+                "float_shares": None,
+                "short_percent_float": None,
+                "market_cap": 1.2e9,
+            }
+        ],
+        "count": 1,
+    }
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/shorts/movers").respond(200, json=payload)
+        result = await _unwrap(tools.get_short_interest_movers)()
+    assert result == payload
+
+
+async def test_get_dark_pool_weekly_forwards_payload() -> None:
+    """darkpool 同樣薄轉發;分母不可用時 pct_of_volume 為 null,MCP 端不補 0。"""
+    payload = [
+        {
+            "week_start": "2026-07-27",
+            "ats_share_qty": "1200000",
+            "ats_trade_count": 4200,
+            "otc_share_qty": "3400000",
+            "otc_trade_count": 9100,
+            "pct_of_volume": None,
+            "top_venues": [
+                {"mpid": "UBSA", "firm_name": "UBS ATS", "share_quantity": "500000"}
+            ],
+        }
+    ]
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/shorts/darkpool/WLF").respond(200, json=payload)
+        result = await _unwrap(tools.get_dark_pool_weekly)(ticker="wlf")
+    assert result == payload
+
+
+async def test_get_dark_pool_weekly_unknown_ticker_returns_empty_list() -> None:
+    """FINRA 沒涵蓋的代號回空 list(非 404),tool 不該把它翻成錯誤。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/shorts/darkpool/NOSUCH").respond(200, json=[])
+        result = await _unwrap(tools.get_dark_pool_weekly)(ticker="nosuch")
+    assert result == []
+
+
+async def test_get_short_interest_movers_422_raises_tool_error() -> None:
+    """direction / limit 超出後端值域 → 422 → ToolError,不外洩裸 httpx 例外。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/shorts/movers").respond(
+            422, json={"detail": "limit must be <= 500"}
+        )
+        with pytest.raises(ToolError) as excinfo:
+            await _unwrap(tools.get_short_interest_movers)(limit=9999)
+    assert "422" in str(excinfo.value)
+
+
+async def test_get_dark_pool_weekly_500_raises_tool_error() -> None:
+    """darkpool 遇上游 5xx → ToolError。"""
+    with respx.mock(base_url="http://test-api") as mock:
+        mock.get("/api/shorts/darkpool/WLF").respond(500, text="boom")
+        with pytest.raises(ToolError) as excinfo:
+            await _unwrap(tools.get_dark_pool_weekly)(ticker="wlf")
     assert "500" in str(excinfo.value)
 
 

@@ -10,7 +10,7 @@
 
 **Hosted service:** `https://mcp.livermore.club/mcp` · **Website:** [Stockfacts](https://livermore.club)
 
-**52 tools · 5 prompts · 3 resources.** Every tool is read-only. Prices and fundamentals are
+**54 tools · 5 prompts · 3 resources.** Every tool is read-only. Prices and fundamentals are
 end-of-day (not real-time). `null` always means *not covered* — never zero.
 
 **[English](#english) · [中文](#中文)**
@@ -35,7 +35,7 @@ to stable shapes, and served as read-only tools an agent can compose into an ans
 - **Honest about its own limits.** `get_data_coverage` and `start_here` report exactly what is
   covered and how fresh each domain is, so an agent knows the boundary of what it can claim.
 - **Consistent conventions everywhere.** Raw USD (never thousands/millions), `YYYY-MM-DD` dates,
-  the same shapes across all 52 tools — no per-endpoint surprises for a model to trip over.
+  the same shapes across all 54 tools — no per-endpoint surprises for a model to trip over.
 - **First-party, normalized.** XBRL financials normalized across fiscal calendars, institutional
   holdings self-computed from raw 13F, filing text split into addressable sections — authoritative
   regulatory data turned into clean, queryable structure.
@@ -48,7 +48,7 @@ to stable shapes, and served as read-only tools an agent can compose into an ans
 equities), not an execution or trading-signal feed — a deliberate trade-off of depth, correctness
 and provenance over latency.
 
-The three surfaces — **52 tools**, **5 prompts**, **3 resources** — are detailed below.
+The three surfaces — **54 tools**, **5 prompts**, **3 resources** — are detailed below.
 
 ## Data disclosure & sources
 
@@ -166,13 +166,13 @@ Modes are tried top to bottom. If the OAuth variables are incomplete the server 
 - **Google OAuth app setup (self-host):** create a *Web application* OAuth client and add `<MCP_PUBLIC_BASE_URL>/auth/callback` to its Authorized redirect URIs. No extra signing or encryption secret is needed — the JWT signing key and the OAuth-state encryption key are both derived deterministically from the client secret, so they stay stable across pods and redeploys (rotating the client secret invalidates existing OAuth sessions, which users fix by authorizing once more).
 - **OAuth state lives in Postgres** (table `mcp_oauth_state`, created automatically) and is encrypted at rest, because it holds users' upstream Google tokens. The framework default is an on-disk file store, which would be wiped every time a container is replaced.
 - Without OAuth configured, the server does **not** advertise OAuth metadata, so a 401 surfaces as a plain auth failure rather than kicking the client into an OAuth flow.
-- **Tier gating:** only `execute_readonly_sql` and `describe_table` require `tier:pro`. On a `tier:free` key they don't appear in `tools/list` and are blocked if called directly. The other 50 tools are available to free and pro.
+- **Tier gating:** only `execute_readonly_sql` and `describe_table` require `tier:pro`. On a `tier:free` key they don't appear in `tools/list` and are blocked if called directly. The other 52 tools are available to free and pro.
 - **Caching:** a verified key is cached in-process for `MCP_AUTH_CACHE_TTL` (5 min) and does not touch the database during that window — the trade-off is that a revoked key stays usable for at most that long. If the database is briefly unreachable, a previously verified key keeps working for up to `MCP_AUTH_STALE_TTL` (60 min); with no cache entry the request is rejected.
 - **Quota is not a broken key:** running out of free-tier calls still authenticates — the connection stays up and only `tools/call` is refused, with a message saying the key is still valid.
 
 ## Tool reference
 
-52 tools, grouped by the sections in `tools.py`. Naming convention: `list_` = many rows,
+54 tools, grouped by the sections in `tools.py`. Naming convention: `list_` = many rows,
 `get_` = one row, `search_` = fuzzy lookup, `screen_` = cross-market filter, `describe_` = schema
 introspection. Unless noted, a "not found" on a single-object tool raises a tool error (HTTP 404);
 list/screen tools return an empty result instead.
@@ -330,12 +330,14 @@ Both return `{"items": [...], "count": N}`.
 
 ### FINRA short-market data
 
-Short **interest** (open positions, twice-monthly) is distinct from short **volume** (daily off-exchange flow). Both list tools return an empty list (not 404) when a ticker has no rows.
+Short **interest** (open positions, twice-monthly) is distinct from short **volume** (daily off-exchange flow), and both are distinct from `get_dark_pool_weekly`, which is total off-exchange traded volume (long and short alike). Per-ticker list tools return an empty list (not 404) when a ticker has no rows.
 
 | Tool · Endpoint | What it does | Params (default) | Returns |
 |---|---|---|---|
 | **`get_short_interest`** · `GET /api/shorts/interest/{ticker}` | Twice-monthly open short-interest history, newest settlement first. | `ticker`, `limit=24` (1–120, ≈1y) | `list[dict]` — settlement_date, current_short_position, change_percent, days_to_cover, short_percent_float (0–100, null if no float) |
 | **`get_short_volume`** · `GET /api/shorts/volume/{ticker}` | Daily off-exchange short-sale volume (flow, not open interest). | `ticker`, `days=30` (1–365), `limit=200` | `list[dict]` — trade_date, short_volume, short_exempt_volume, total_volume, short_volume_percent |
+| **`get_short_interest_movers`** · `GET /api/shorts/movers` | Biggest short build-ups / covers in the latest FINRA settlement, using FINRA's own `change_percent`. `min_position` gates both the current and previous leg. | `direction='increase'`, `min_position=100000`, `market_cap_min/max=None`, `limit=25` (1–500) | `dict{items[], count}` — ticker, settlement_date, current/previous_short_position, change_previous, change_percent, days_to_cover, short_percent_float, market_cap |
+| **`get_dark_pool_weekly`** · `GET /api/shorts/darkpool/{ticker}` | Weekly ATS (dark pool) vs OTC market-maker volume + share of consolidated volume. Total volume, **not** shorts; published ~3 weeks (T1) to ~5 weeks (T2/OTCE) late. | `ticker`, `weeks=12` (1–52) | `list[dict]` — week_start, ats_share_qty/trade_count, otc_share_qty/trade_count, pct_of_volume (null when denominator unusable), top_venues[] (top_wholesalers[] arrives with the API-side wholesaler work) |
 
 ### Analysis & reports (interpretation)
 
@@ -461,7 +463,7 @@ Form 4、FINRA、市場行情)先被解析、正規化成穩定結構,再以唯�
 **資料是收盤級(EOD)、非即時。** 這是一套研究與分析用的資料集(約 5 年美股),不是下單或交易
 訊號來源——這是刻意的取捨:用深度、正確性與可溯源性換取即時性。
 
-三個表面——**52 tools、5 prompts、3 resources**——詳見下方。
+三個表面——**54 tools、5 prompts、3 resources**——詳見下方。
 
 ## 資料披露與來源
 
@@ -739,12 +741,14 @@ tool 參數叫 `ticker`,底層 API query 參數是 `underlying`。**數值欄以
 
 ### FINRA 空頭資料
 
-空單**餘額**(未平倉,每月兩次)與空單**成交量**(每日場外 flow)是兩回事。查無時 list 類回空 list(非 404)。
+空單**餘額**(未平倉,每月兩次)與空單**成交量**(每日場外 flow)是兩回事;兩者又都不同於 `get_dark_pool_weekly`——那是場外**總**成交量(多空皆含)。查無時 per-ticker list 類回空 list(非 404)。
 
 | 工具 · 接口 | 用途 | 參數(預設) | 回傳 |
 |---|---|---|---|
 | **`get_short_interest`** · `GET /api/shorts/interest/{ticker}` | 每月兩次的未平倉空單歷史,最新 settlement 在前。 | `ticker`, `limit=24`(1–120,≈1 年) | `list[dict]` — settlement_date, current_short_position, change_percent, days_to_cover, short_percent_float(0–100,無 float 分母時 null) |
 | **`get_short_volume`** · `GET /api/shorts/volume/{ticker}` | 每日場外 short-sale 成交量(flow,非未平倉)。 | `ticker`, `days=30`(1–365), `limit=200` | `list[dict]` — trade_date, short_volume, short_exempt_volume, total_volume, short_volume_percent |
+| **`get_short_interest_movers`** · `GET /api/shorts/movers` | 最新一期 FINRA 結算的空單增減榜,直接用 FINRA 現成的 `change_percent`。`min_position` 卡當期與前期兩腿。 | `direction='increase'`, `min_position=100000`, `market_cap_min/max=None`, `limit=25`(1–500) | `dict{items[], count}` — ticker, settlement_date, current/previous_short_position, change_previous, change_percent, days_to_cover, short_percent_float, market_cap |
+| **`get_dark_pool_weekly`** · `GET /api/shorts/darkpool/{ticker}` | 逐週暗池(ATS)與場外做市商成交量及占總量比重。是**總**成交量非空單;延後約 3 週(T1)至 5 週(T2/OTCE)發布。 | `ticker`, `weeks=12`(1–52) | `list[dict]` — week_start, ats_share_qty/trade_count, otc_share_qty/trade_count, pct_of_volume(分母不可用時 null), top_venues[](top_wholesalers[] 待 API 端 wholesaler 工作上線) |
 
 ### 分析與報告(有解讀)
 

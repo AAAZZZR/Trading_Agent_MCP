@@ -79,6 +79,8 @@ async def start_here() -> dict[str, Any]:
             "Want a fast four-lens traffic-light conclusion -> get_analysis",
             "Want the raw data bundle to analyze yourself -> get_objective_report",
             "Need positioning -> get_short_interest for open positions; get_short_volume for separate off-exchange flow",
+            "Need who shorts are crowding into right now -> get_short_interest_movers for the biggest FINRA settlement-over-settlement build-ups and covers; screen_high_short_interest for the highest standing short % of float",
+            "Need where a ticker actually trades off-exchange -> get_dark_pool_weekly for weekly ATS (dark pool) vs OTC market-maker share (total volume, not shorts; lags 3-5 weeks)",
             "Need any market number -> fetch it with a tool; never answer from memory (it is stale)",
             "Flexible or statistical queries (pro tier) -> describe_table, then execute_readonly_sql",
         ],
@@ -1587,6 +1589,105 @@ async def screen_high_short_interest(
             "min_days_to_cover": min_days_to_cover,
             "limit": limit,
         },
+    )
+
+
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
+async def get_short_interest_movers(
+    direction: Literal["increase", "decrease"] = "increase",
+    min_position: int = 100_000,
+    market_cap_min: float | None = None,
+    market_cap_max: float | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """跨市場排出最新一期 FINRA 結算裡空單增加 / 減少最多的標的。
+
+    回答「最近空方在往哪裡壓、哪裡在回補」。跟 `screen_high_short_interest`(看**存量**
+    水位:short % float 最高)互補 —— 這裡看的是**變動**。
+
+    change_previous / change_percent 是 FINRA 每期結算自己發布的現成欄位(當期 vs 前期),
+    **不是這裡跨期算出來的**;沒有 change_percent 的列不入榜。direction="increase" = 空單
+    增加(看空資金湧入),"decrease" = 空單減少(回補)。
+
+    min_position 同時卡**當期與前期**兩腿部位,這是刻意的:change_percent 的分母是前期
+    部位,只卡當期的話榜首會被前期只有幾百股的雜訊列洗版(prod 實測出現過 +10,342,833%)。
+    要放寬就調小,但小於幾萬股時要對百分比保持懷疑。
+
+    short_percent_float 與 float_shares 沿用 /api/shorts 全域的 float 信任守衛:分母不可信
+    時兩者一律 null(不用 shares outstanding 冒充),缺值代表未覆蓋而非 0。market_cap 由最新
+    收盤價即時估算,約 7k / 20k 標的有值,null 代表未覆蓋 —— 帶市值過濾會連帶篩掉沒市值的列。
+
+    Data cadence: FINRA settles twice monthly (mid-month and month-end) and publishes each
+    settlement with a lag, so settlement_date always trails today — this is a snapshot, not a
+    daily series. FINRA also revises the prior period after the next one is published, so an
+    already-seen settlement can change (see revision_flag on get_short_interest).
+
+    Args:
+        direction: "increase"(空單增加,預設)或 "decrease"(回補)。
+        min_position: 當期與前期空單部位都要達到的股數下限(≥0,預設 100,000)。
+        market_cap_min: USD 市值下限;省略 = 不過濾。
+        market_cap_max: USD 市值上限;省略 = 不過濾。
+        limit: 最多回傳幾檔(1-500,預設 25)。
+
+    Returns:
+        dict,shape = {"items": [...], "count": N}。每筆 item 含 ticker、company_name
+        (可能 null)、settlement_date(YYYY-MM-DD)、current_short_position、
+        previous_short_position、change_previous(皆股數)、change_percent(百分比數值,
+        -12.3 = 減少 12.3%)、days_to_cover、float_shares、short_percent_float(0-100,
+        分母不可信時 null)、market_cap(USD,可能 null)。無標的過門檻回
+        {"items": [], "count": 0}。
+    """
+    params: dict[str, Any] = {
+        "direction": direction,
+        "min_position": min_position,
+        "limit": limit,
+    }
+    if market_cap_min is not None:
+        params["market_cap_min"] = market_cap_min
+    if market_cap_max is not None:
+        params["market_cap_max"] = market_cap_max
+    return await api.get("/api/shorts/movers", params=params)
+
+
+@mcp.tool(annotations=_READONLY_ANNOTATIONS)
+async def get_dark_pool_weekly(
+    ticker: str,
+    weeks: int = 12,
+) -> list[dict[str, Any]]:
+    """取得某標的逐週的場外成交結構:暗池(ATS)與場外做市商各成交多少、占總量幾成。
+
+    資料來源是 FINRA OTC transparency 週報。`ats_*` = 暗池(ATS)撮合量,`otc_*` = 場外
+    做市商(non-ATS)內部化量 —— 後者常被當成散戶單流被內部化的 proxy;兩者是同一份週報裡
+    **互斥**的兩類,不重疊。這是**總成交量**(多空皆含),跟空單部位無關,別跟
+    get_short_interest / get_short_volume 混為一談。
+
+    pct_of_volume 的分母是**同一週日 K(prices_daily)成交量加總**,不是 FINRA 自己的
+    分母;分母缺或為 0 時給 null,不給假數字。
+
+    **這不是即時資料**:FINRA 依 tier 延後發布 —— T1(流動性最好的 NMS 股)約延後 3 週,
+    T2 與 OTCE 約 5 週。最新一週不在裡面是正常的,不要當成量歸零。
+
+    top_venues = 該週前 5 大暗池(ATS)明細;top_wholesalers = 該週前 5 大場外做市商。
+    FINRA 該週沒發 per-firm 明細、或該層級資料仍在回填時,會是空陣列(或該欄位不存在),
+    此時只代表明細未覆蓋,不代表沒有成交。
+
+    Data cadence: FINRA OTC transparency weekly report, published ~3 weeks (T1) to ~5 weeks
+    (T2 / OTCE) after the week it covers.
+
+    Args:
+        ticker: 股票代號(case-insensitive,內部轉大寫)。
+        weeks: 最多回傳幾週(1-52,最新在前,預設 12 ≈ 一季)。
+
+    Returns:
+        list[dict],每筆含 week_start(FINRA 定義的該週起始日,YYYY-MM-DD)、ats_share_qty、
+        ats_trade_count、otc_share_qty、otc_trade_count、pct_of_volume(0-100,分母不可用
+        時 null)、top_venues(list,每筆 mpid / firm_name / share_quantity)、
+        top_wholesalers(同結構,可能為空)。**股數與占比以 JSON 字串回傳**(Decimal),
+        做數學前先轉 float。查無該 ticker 回空 list(非 404)—— FINRA 只涵蓋部分代號,
+        分不出「拼錯」還是「無覆蓋」,不確定時先 search_companies。
+    """
+    return await api.get(
+        f"/api/shorts/darkpool/{ticker.upper()}", params={"weeks": weeks}
     )
 
 
